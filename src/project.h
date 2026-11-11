@@ -8,6 +8,9 @@ class LayerItem;
 class QGraphicsItem;
 class QGraphicsScene;
 
+// Version written in new .vaxmap files. A file with a higher one comes from a newer Vax Maps.
+int projectFormatVersion();
+
 // .vaxmap files are JSON. Map images are linked by path (relative to the project file when possible), not embedded.
 QJsonObject layersToJson(const QList<LayerItem *> &layers, const QDir &base);
 // Adds the layers stored in `o` to the scene, bottom first.

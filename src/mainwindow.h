@@ -32,6 +32,8 @@ public:
     void newProject();
     bool openProject(const QString &file);
     bool openFromUi(const QString &file);                // openProject, then asks for the images it did not find
+    void openFiles(const QStringList &files, QPointF scenePos);   // dropped or on the command line: a project/package, or maps
+    void openFiles(const QStringList &files);                     // maps go to the centre of the view
     bool saveTo(const QString &file);
     void fitAll();
     void moveSelectionToActiveLayer();

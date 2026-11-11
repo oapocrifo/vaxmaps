@@ -203,7 +203,7 @@ QPainterPath ZoneItem::outline() const {
 
 QRectF ZoneItem::boundingRect() const { return outline().boundingRect().adjusted(-1, -1, 1, 1); }
 
-void ZoneItem::paint(QPainter *p, const QStyleOptionGraphicsItem *o, QWidget *) {
+void ZoneItem::paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) {
     QColor fill = color;
     fill.setAlpha(60);
     QPen pen(color, 2);
@@ -448,7 +448,7 @@ void LinkItem::syncFlags() {
 
 void LinkItem::setHover(bool on) { ui::glide(glowAnim, glow, on ? 1 : 0, on ? 160 : 260); }
 
-void LinkItem::paint(QPainter *p, const QStyleOptionGraphicsItem *o, QWidget *) {
+void LinkItem::paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) {
     const QRectF r = box();
     p->setRenderHint(QPainter::Antialiasing);
     if (!linksVisible) {

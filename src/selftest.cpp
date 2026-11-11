@@ -8,7 +8,7 @@
 #include "mapitem.h"
 #include "project.h"
 
-#include <QtGui/private/qzipwriter_p.h>
+#include <private/qzipwriter_p.h>
 #include "ui.h"
 
 #include <QApplication>
@@ -21,6 +21,8 @@
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QLockFile>
+#include <QMessageBox>
+#include <QTimer>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
@@ -958,6 +960,68 @@ void version06(MainWindow &w, const QString &dir, const QString &map1, const QSt
     w.dirty = false;
 }
 
+void version062(MainWindow &w, const QString &dir, const QString &image) {
+    say("\n== 0.6.2 ==");
+    {   // a project from a newer version: what is known loads, Save asks for a new name
+        QFile f(dir + "/newer.vaxmap");
+        f.open(QIODevice::WriteOnly);
+        f.write(R"({"format":"vaxmaps","version":99,"layers":[{"name":"A","items":[
+            {"type":"zone","shape":"rect","pts":[0,0,100,100],"name":"Known","x":0,"y":0},
+            {"type":"hologram","x":5,"y":5}]}]})");
+        f.close();
+        QString seen;
+        QTimer closer;   // accepts the warning shown inside openProject
+        QObject::connect(&closer, &QTimer::timeout, [&] {
+            if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) { seen = box->text(); box->accept(); }
+        });
+        closer.start(20);
+        w.dirty = false;
+        const bool opened = w.openProject(f.fileName());
+        closer.stop();
+        int zones = 0;
+        for (LayerItem *l : w.layers)
+            for (QGraphicsItem *it : l->childItems()) zones += it->type() == ZoneItem::Type;
+        check(opened && zones == 1 && seen.contains("newer") && !w.windowTitle().contains("newer.vaxmap"),
+              QString("a project from a newer version warns, loads what it knows and does not keep its name for Save (%1 %2 '%3' %4)").arg(opened).arg(zones).arg(seen, w.windowTitle()));
+        w.newProject();
+    }
+    {   // the clean-up at start: pyramids unused for a long time go, recent and unfinished ones stay
+        const QString root = MapData::cacheRoot();
+        auto make = [&](const QString &name, bool meta, int daysAgo) {
+            QDir().mkpath(root + "/" + name);
+            QFile tile(root + "/" + name + "/0_0_0.png");
+            tile.open(QIODevice::WriteOnly);
+            tile.write("x");
+            if (!meta) return;
+            QFile m(root + "/" + name + "/meta.json");
+            m.open(QIODevice::WriteOnly);
+            m.write("{}");
+            m.flush();   // else closing writes it and the time becomes now
+            m.setFileTime(QDateTime::currentDateTime().addDays(-daysAgo), QFileDevice::FileModificationTime);
+        };
+        make("selftest-old", true, 200);
+        make("selftest-recent", true, 3);
+        make("selftest-building", false, 0);
+        qint64 freed = -1;
+        MapData::clearCache([&](qint64 b) { freed = b; }, QDateTime::currentDateTime().addDays(-90));
+        waitFor([&] { return freed >= 0; }, 5000);
+        check(freed > 0 && !QDir(root + "/selftest-old").exists() && !QDir(root + "/selftest-old.del").exists()
+                  && QDir(root + "/selftest-recent").exists() && QDir(root + "/selftest-building").exists(),
+              QString("the cache drops pyramids unused for 90 days and keeps recent and unfinished ones (%1 %2)").arg(freed).arg(QDir(root).entryList(QDir::Dirs | QDir::NoDotAndDotDot).join(",")));
+        QDir(root + "/selftest-recent").removeRecursively();
+        QDir(root + "/selftest-building").removeRecursively();
+    }
+    {   // command line: an image becomes a map in the view
+        auto count = [&] { const auto all = w.scene->items(); return int(std::count_if(all.begin(), all.end(), [](QGraphicsItem *it) { return it->type() == MapItem::Type; })); };
+        const int before = count();
+        w.openFiles({image});
+        const int after = count();
+        check(after == before + 1, "an image given on the command line is imported");
+        w.dirty = false;
+        w.newProject();
+    }
+}
+
 void bench(MainWindow &w, const QString &dir) {
     say("\n== benchmark: 8 maps of 6000 x 4000 px ==");
     QStringList paths;
@@ -1443,6 +1507,7 @@ int runSelfTest(const QStringList &args) {
     regressions(w, tmp.path(), map2);
     additions(w, tmp.path(), map2);
     version06(w, tmp.path(), map1, map2);
+    version062(w, tmp.path(), map2);
     if (args.contains("--bench")) bench(w, tmp.path());
     w.dirty = false;
     say(failures ? QString("\n%1 failure(s)").arg(failures) : "\nAll tests passed.");

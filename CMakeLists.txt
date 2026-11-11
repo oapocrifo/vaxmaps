@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(VaxMaps VERSION 0.6.1 LANGUAGES CXX)
+project(VaxMaps VERSION 0.6.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,7 +26,7 @@ if(WIN32)
     set_property(SOURCE icon/vaxmaps.rc APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/icon/vaxmaps.ico)
     target_include_directories(VaxMaps PRIVATE icon)
 endif()
-target_link_libraries(VaxMaps PRIVATE Qt6::Widgets Qt6::GuiPrivate)   # GuiPrivate: QZipReader/QZipWriter for packages
+target_link_libraries(VaxMaps PRIVATE Qt6::Widgets Qt6::GuiPrivate Qt6::CorePrivate)   # QZipReader/QZipWriter for packages: QtGui private up to Qt 6.6, QtCore private after
 
 # MinGW: link libgcc/libstdc++/winpthread in so the .exe runs without extra DLLs.
 if(MINGW)

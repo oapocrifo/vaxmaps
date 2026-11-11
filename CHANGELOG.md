@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.2
+
+Fixes and maintenance. Projects from 0.6 and 0.6.1 open unchanged.
+
+- Security: the Windows build uses Qt 6.8.5 LTS instead of 6.4.2. The image libraries inside the old one had known flaws that a crafted map file could exploit: libwebp 1.2.4 (CVE-2023-4863, WebP) and libtiff 4.4.0. Now libwebp 1.6.0 and libtiff 4.7.1.
+- Maps are prepared faster on import: the tiles are compressed on several cores. 8 maps of 6000 x 4000 px took 9.2 s instead of 15.9 s on 2 cores.
+- A project saved by a newer version of Vax Maps opens with a warning. What this version does not know is left out, and Save asks for a new name, so the original is not overwritten without it.
+- The tile cache no longer grows forever: at start, the pyramids of maps not opened for 90 days are deleted in the background.
+- Save package refuses projects whose images add up to more than 4 GB, with a message. Before, the .zip came out broken.
+- Command line and dropping files on `VaxMaps.exe`: a package (.zip) or map images now open too, not only .vaxmap. A project given while a recovery copy is restored is no longer ignored: the Save question decides which one stays.
+- GitHub Actions builds the program and runs the self-test on every push.
+
+## 0.6.1
+
+- Portable copy (`VaxMaps-0.6.1-portable.zip`): with a `VaxMaps-data` folder beside `VaxMaps.exe`, the settings, tile cache and recovery copy are kept in it, and nothing is written to the registry or the user's folders.
+
 ## 0.6
 
 - **Tokens** (B): a click puts a numbered disc on the square clicked. Dragged, it lands on the centre of a square (on a corner when it is 2x2 or 4x4). Right click it for its name, colour and size (1x1 to 4x4). A ruler started on a token measures from its centre.

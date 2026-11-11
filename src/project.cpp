@@ -157,6 +157,8 @@ QGraphicsItem *itemFromJson(const QJsonObject &o, const QDir &base, int version)
 
 } // namespace
 
+int projectFormatVersion() { return formatVersion; }
+
 QJsonArray itemsToJson(const QList<QGraphicsItem *> &items, const QDir &base) {
     QJsonArray a;
     for (QGraphicsItem *it : items)

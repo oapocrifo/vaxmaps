@@ -48,6 +48,9 @@ int main(int argc, char **argv) {
     p.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(120, 120, 125));
     app.setPalette(p);
 
+    // Pyramids of maps not opened for 90 days are deleted in the background: the cache does not grow forever.
+    if (!selfTest) MapData::clearCache([](qint64) {}, QDateTime::currentDateTime().addDays(-90));
+
     int rc;
     if (selfTest) {
         rc = runSelfTest(app.arguments());
@@ -55,7 +58,8 @@ int main(int argc, char **argv) {
         MainWindow w;
         w.restoreSession();   // shows it
         const QStringList args = app.arguments();
-        if (!w.offerRecovery() && args.size() > 1 && args[1].endsWith(".vaxmap", Qt::CaseInsensitive)) w.openFromUi(args[1]);
+        w.offerRecovery();
+        if (args.size() > 1) w.openFiles(args.mid(1));   // after a restored copy, the Save question decides which one stays
         rc = app.exec();
     }
     MapData::shutdown();

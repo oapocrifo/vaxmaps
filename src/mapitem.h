@@ -1,5 +1,6 @@
 #pragma once
 #include <QGraphicsObject>
+#include <QDateTime>
 #include <QImage>
 #include <QSharedPointer>
 #include <functional>
@@ -20,7 +21,8 @@ public:
     static void shutdown();
     static QString cacheRoot();
     // Deletes the pyramids of the maps not opened in this session, in the background. `done` gets the bytes freed.
-    static void clearCache(std::function<void(qint64)> done);
+    // With `unusedBefore`, only those last opened before it (by any window: opening a map touches its meta.json).
+    static void clearCache(std::function<void(qint64)> done, const QDateTime &unusedBefore = {});
 
     QString path, dir, ext, error;
     QSize size;          // full image size

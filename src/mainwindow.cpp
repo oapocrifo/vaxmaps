@@ -28,8 +28,8 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QScrollBar>
-#include <QtGui/private/qzipreader_p.h>
-#include <QtGui/private/qzipwriter_p.h>
+#include <private/qzipreader_p.h>
+#include <private/qzipwriter_p.h>
 #include <QPointer>
 #include <QSaveFile>
 #include <QSettings>
@@ -247,11 +247,7 @@ MainWindow::MainWindow() : recoveryLock(recoveryFile() + ".lock") {
         else openMenu(at);
     });
     // Queued: this may ask to save, and a dialog shown inside the drop freezes the window the files came from.
-    connect(canvas, &Canvas::filesDropped, this, [this](const QStringList &files, QPointF pos) {
-        for (const QString &f : files)
-            if (f.endsWith(".vaxmap", Qt::CaseInsensitive) || f.endsWith(".zip", Qt::CaseInsensitive)) { if (maybeSave()) openFromUi(f); return; }
-        importMaps(files, pos);
-    }, Qt::QueuedConnection);
+    connect(canvas, &Canvas::filesDropped, this, qOverload<const QStringList &, QPointF>(&MainWindow::openFiles), Qt::QueuedConnection);
     qApp->installEventFilter(this);   // closes popups on outside clicks and Esc, keeps overlays placed
 
     undoTimer.setSingleShot(true);
@@ -936,6 +932,14 @@ void MainWindow::importMaps(const QStringList &files, QPointF at) {
     }
 }
 
+void MainWindow::openFiles(const QStringList &files, QPointF pos) {
+    for (const QString &f : files)
+        if (f.endsWith(".vaxmap", Qt::CaseInsensitive) || f.endsWith(".zip", Qt::CaseInsensitive)) { if (maybeSave()) openFromUi(f); return; }
+    importMaps(files, pos);
+}
+
+void MainWindow::openFiles(const QStringList &files) { openFiles(files, canvas->mapToScene(canvas->viewport()->rect().center())); }
+
 void MainWindow::importDialog() {
     importMaps(QFileDialog::getOpenFileNames(this, T("Import maps"), QString(), imageFilter()),
                canvas->mapToScene(canvas->viewport()->rect().center()));
@@ -1005,9 +1009,16 @@ bool MainWindow::openProject(const QString &f) {
     const bool recovered = QFileInfo(f) == QFileInfo(recoveryFile());
     file = recovered ? doc.object()["recoveredFrom"].toString() : QFileInfo(f).absoluteFilePath();
     if (!recovered) addRecent(file);
+    // What a newer version added was left out while loading: Save must not overwrite the original without it.
+    const bool newer = doc.object()["version"].toInt(1) > projectFormatVersion();
+    if (newer) file.clear();
     refreshLayers();
     setDirty(recovered);
     resetHistory();
+    if (newer) {
+        QMessageBox::warning(this, "Vax Maps", T("%1 was saved by a newer version of Vax Maps. What this version does not know was left out. "
+                                                 "Save asks for a new name, so the original stays as it is.").arg(QFileInfo(f).fileName()));
+    }
     return true;
 }
 
@@ -1395,6 +1406,14 @@ bool MainWindow::savePackage(const QString &zipFile) {
         taken.insert(name.toLower());
         inside.insert(path, "images/" + name);
     });
+    qint64 total = 0;
+    for (auto it = inside.cbegin(); it != inside.cend(); ++it) total += QFileInfo(it.key()).size();
+    // shortcut: QZipWriter has no ZIP64 (sizes and offsets are 32 bit) and reads each image whole into memory.
+    // Past 4 GB the .zip would come out broken, so it is refused; bigger packages need another zip writer.
+    if (total > 0xFFF00000LL) {
+        QMessageBox::warning(this, "Vax Maps", T("The images of this project add up to %1 GB. A package holds at most 4 GB.").arg(total / 1e9, 0, 'f', 1));
+        return false;
+    }
     QJsonObject o = toJson(QDir::root());
     QJsonArray ls = o["layers"].toArray();
     for (int i = 0; i < ls.size(); ++i) {   // the maps point at their copies, relative to the project

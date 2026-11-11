@@ -2,14 +2,14 @@
 
 Infinite canvas for tabletop RPG maps. Many large maps on one page, each with its own square or hex grid, rulers that count squares or hexes, links that jump between connected maps, tokens, fog of war, free drawing, text, notes, layers and zones.
 
-C++17, Qt 6 Widgets. Windows and Linux. Current version: 0.6.1.
+C++17, Qt 6 Widgets. Windows and Linux. Current version: 0.6.2.
 
 ## Download
 
 From the Releases page:
 
-- `VaxMaps-0.6.1-setup.exe`: installs for the current user (no administrator rights) in `%LOCALAPPDATA%\Programs\Vax Maps`, adds a Start menu entry and opens `.vaxmap` files on double click. Uninstall from Windows Settings.
-- `VaxMaps-0.6.1-portable.zip`: runs from any folder or USB drive. See [Portable copy](#portable-copy).
+- `VaxMaps-0.6.2-setup.exe`: installs for the current user (no administrator rights) in `%LOCALAPPDATA%\Programs\Vax Maps`, adds a Start menu entry and opens `.vaxmap` files on double click. Uninstall from Windows Settings.
+- `VaxMaps-0.6.2-portable.zip`: runs from any folder or USB drive. See [Portable copy](#portable-copy).
 
 The program is not signed. Windows SmartScreen warns on the first start.
 
@@ -103,11 +103,12 @@ New items go to the active (highlighted) layer. Lock blocks selecting and moving
 ### Projects
 
 - `.vaxmap` is JSON with layers and items. Maps are referenced by path, relative to the project when possible, and not embedded. Copy the images with the project.
-- Save package… writes the project and all its images to one `.zip`. Opening the `.zip` extracts it to a new folder beside it and opens the project.
+- Save package… writes the project and all its images to one `.zip` (at most 4 GB of images). Opening the `.zip` extracts it to a new folder beside it and opens the project.
 - Missing images: on open, the program asks for the first one and finds the others in the same folder. Later: right click the map, Locate image….
 - Recovery copy: with unsaved changes the project is copied every minute to `recovery.vaxmap` in the data folder. The next start after a crash offers to restore it.
 - Open recent… lists the last 5 projects. Window, tool, colour, width, Layers panel and minimap are restored on start.
-- Projects from 0.3 open with their calibration converted to a square grid.
+- Projects from 0.3 open with their calibration converted to a square grid. A project from a newer version opens with a warning, and Save then asks for a new name.
+- `VaxMaps.exe file` (or a file dropped on the program icon) opens a `.vaxmap`, a package `.zip`, or imports map images.
 
 ### Interface language
 
@@ -117,15 +118,15 @@ English and Portuguese. The first start follows the system language. The Portugu
 
 Techniques taken from PureRef and Atlas VTT:
 
-- On import each map becomes a pyramid of 512 px tiles (level 0 = original size, each level half the previous), stored in a disk cache. Only the smallest level stays in memory.
+- On import each map becomes a pyramid of 512 px tiles (level 0 = original size, each level half the previous), stored in a disk cache and compressed on several cores. Only the smallest level stays in memory.
 - The level drawn follows the zoom. Only visible tiles are loaded, in threads, newest request first. While a tile loads, the closest coarser level in memory is shown.
 - Decoded tiles share a 1 GB LRU cache across all maps.
 - Tiles are lossless PNG, so at full zoom the pixels are the original ones. Each tile carries 1 px of its neighbours to avoid seams.
-- Cache location: `%LOCALAPPDATA%\VaxMaps\Vax Maps\cache\tiles2`. A textured 6000 x 4000 px map used 32 MB. It can be deleted while the program is closed, or from the menu: Project, Clear cache (with one window of the program open).
+- Cache location: `%LOCALAPPDATA%\VaxMaps\Vax Maps\cache\tiles2`. A textured 6000 x 4000 px map used 32 MB. Pyramids of maps not opened for 90 days are deleted at start. The cache can also be deleted while the program is closed, or from the menu: Project, Clear cache (with one window of the program open).
 
 ## Portable copy
 
-`VaxMaps-0.6.1-portable.zip` contains `VaxMaps.exe` and a `VaxMaps-data` folder. While that folder exists, settings (`VaxMaps-data\VaxMaps\Vax Maps.ini`), tile cache and recovery copy stay in it, and nothing is written to the registry or the user's folders. Delete the folder and the program uses the usual locations. The portable copy does not associate `.vaxmap` files: open them from the program or drop them on the window.
+`VaxMaps-0.6.2-portable.zip` contains `VaxMaps.exe` and a `VaxMaps-data` folder. While that folder exists, settings (`VaxMaps-data\VaxMaps\Vax Maps.ini`), tile cache and recovery copy stay in it, and nothing is written to the registry or the user's folders. Delete the folder and the program uses the usual locations. The portable copy does not associate `.vaxmap` files: open them from the program or drop them on the window.
 
 ## Build
 
@@ -146,7 +147,7 @@ cmake -S . -B build && cmake --build build
 
 Tests: `VaxMaps --selftest <folder> [--bench]`. On Linux without a display, set `QT_QPA_PLATFORM=offscreen`.
 
-The released `.exe` is cross-built on Linux with static Qt 6.4.2 and MinGW. Scripts and the NSIS installer script are in `tools/`.
+The released `.exe` is cross-built on Linux with static Qt 6.8.5 LTS and MinGW: `tools/build-windows.sh` builds Qt (host tools and Windows libraries), the program, the installer and the portable zip. The NSIS installer script is in `tools/`. GitHub Actions runs the self-test on every push.
 
 ## Changes
 

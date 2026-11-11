@@ -21,6 +21,8 @@
 #include <atomic>
 #include <cmath>
 #include <deque>
+#include <thread>
+#include <vector>
 
 QString dataDir;
 
@@ -155,14 +157,24 @@ Built buildPyramid(const QString &path, const QString &dir) {
             if (!img.save(dir + "/overview.png")) { b.error = "cannot write the cache"; return b; }
             break;
         }
-        for (int ty = 0; ty * TILE < img.height(); ++ty) {
-            if (quitting) { b.error = "cancelled"; return b; }   // per row: closing does not wait for a whole level of a big map
-            for (int tx = 0; tx * TILE < img.width(); ++tx) {
+        // Tiles are encoded in parallel: PNG encoding, not decoding, is most of the build time.
+        std::atomic<bool> failed{false};
+        const int cols = (img.width() + TILE - 1) / TILE, rows = (img.height() + TILE - 1) / TILE;
+        std::atomic<int> next{0};
+        auto work = [&] {
+            for (int i; (i = next++) < cols * rows && !failed && !quitting;) {
+                const int tx = i % cols, ty = i / cols;
                 const QRect r = QRect(tx * TILE - 1, ty * TILE - 1, TILE + 2, TILE + 2) & img.rect();
                 const QString f = QString("%1/%2_%3_%4.%5").arg(dir).arg(level).arg(tx).arg(ty).arg(b.ext);
-                if (!img.copy(r).save(f, nullptr, 80)) { b.error = "cannot write the cache"; return b; }   // PNG quality 80 = zlib level 1: fast
+                if (!img.copy(r).save(f, nullptr, 80)) failed = true;   // PNG quality 80 = zlib level 1: fast
             }
-        }
+        };
+        std::vector<std::thread> threads;
+        for (int t = 1; t < qBound(1, QThread::idealThreadCount(), 8); ++t) threads.emplace_back(work);
+        work();
+        for (auto &t : threads) t.join();
+        if (quitting) { b.error = "cancelled"; return b; }
+        if (failed) { b.error = "cannot write the cache"; return b; }
         img = img.scaled((img.width() + 1) / 2, (img.height() + 1) / 2, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     }
     // meta.json is written last: its presence marks a complete pyramid.
@@ -190,7 +202,7 @@ QString MapData::cacheRoot() {
     return root;
 }
 
-void MapData::clearCache(std::function<void(qint64)> done) {
+void MapData::clearCache(std::function<void(qint64)> done, const QDateTime &unusedBefore) {
     QSet<QString> keep;
     for (const auto &m : std::as_const(registry)) keep.insert(QFileInfo(m->dir).fileName());
     // Renamed now, deleted in the background: a map imported meanwhile never finds a half-deleted pyramid.
@@ -198,6 +210,11 @@ void MapData::clearCache(std::function<void(qint64)> done) {
     QStringList doomed;
     for (const QString &d : root.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
         if (keep.contains(d)) continue;
+        if (unusedBefore.isValid() && !d.endsWith(".del")) {
+            // Without meta.json the pyramid may still be being built: the folder's own time then says when.
+            const QFileInfo meta(root.filePath(d) + "/meta.json");
+            if ((meta.exists() ? meta.lastModified() : QFileInfo(root.filePath(d)).lastModified()) >= unusedBefore) continue;
+        }
         const QString gone = d.endsWith(".del") ? d : d + ".del";
         if (d == gone || root.rename(d, gone)) doomed << root.filePath(gone);
     }
@@ -241,6 +258,8 @@ QSharedPointer<MapData> MapData::get(const QString &path) {
             m->ext = o["ext"].toString();
             m->overview = ov.convertToFormat(displayFormat(ov));
             m->ready = true;
+            metaFile.close();
+            if (metaFile.open(QIODevice::Append)) metaFile.setFileTime(QDateTime::currentDateTime(), QFileDevice::FileModificationTime);   // last use, for the clean-up at start
             return m;
         }
     }

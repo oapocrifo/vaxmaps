@@ -228,6 +228,12 @@ const char *const table[][2] = {
     {"PNG image (*.png);;JPEG image (*.jpg)", "Imagem PNG (*.png);;Imagem JPEG (*.jpg)"},
     {"Could not open %1: %2", "Não foi possível abrir %1: %2"},
     {"Not a Vax Maps project: %1", "Não é um projeto do Vax Maps: %1"},
+    {"The images of this project add up to %1 GB. A package holds at most 4 GB.",
+     "As imagens deste projeto somam %L1 GB. Um pacote comporta no máximo 4 GB."},
+    {"%1 was saved by a newer version of Vax Maps. What this version does not know was left out. "
+     "Save asks for a new name, so the original stays as it is.",
+     "%1 foi salvo por uma versão mais nova do Vax Maps. O que esta versão não conhece foi deixado de fora. "
+     "Salvar vai pedir um nome novo, e o original fica como está."},
     {"Could not save %1: %2", "Não foi possível salvar %1: %2"},
     {"Could not write the image %1", "Não foi possível gravar a imagem %1"},
     {"Save the changes to this project?", "Salvar as alterações deste projeto?"},
