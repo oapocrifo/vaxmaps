@@ -103,7 +103,6 @@ Canvas::Canvas(QGraphicsScene *scene, QWidget *parent) : QGraphicsView(scene, pa
     setViewportUpdateMode(FullViewportUpdate);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    setTransformationAnchor(AnchorUnderMouse);
     setResizeAnchor(AnchorViewCenter);
     setDragMode(RubberBandDrag);
     setBackgroundBrush(QColor(36, 37, 41));
@@ -176,20 +175,35 @@ QPointF Canvas::snapped(QPointF p, bool centre) const { return snapEnabled ? sna
 
 void Canvas::zoomBy(double f) {
     const double z = zoom() * f;
-    if (z < 0.005 || z > 64) return;
+    // Fit all can leave the zoom outside 0.5 %..6400 %: only steps that go further out are refused.
+    if ((f < 1 && z < 0.005) || (f > 1 && z > 64)) return;
     scale(f, f);
     emit zoomChanged(zoom());
 }
 
 void Canvas::wheelEvent(QWheelEvent *e) {
     camera.stop();
-    setTransformationAnchor(AnchorUnderMouse);
+    // The scene point under the cursor stays there. Not AnchorUnderMouse: it uses the last mouse move the view
+    // handled, which is the one before a pan, so the first zoom after a pan shifted the view by the pan distance.
+    const QPoint vp = e->position().toPoint();
+    const QPointF anchor = mapToScene(vp);
+    setTransformationAnchor(NoAnchor);
     zoomBy(std::pow(1.0015, e->angleDelta().y()));
+    const QPoint d = mapFromScene(anchor) - vp;
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() + d.x());
+    verticalScrollBar()->setValue(verticalScrollBar()->value() + d.y());
 }
 
 LinkItem *Canvas::linkAt(QPoint vp) const {
     for (QGraphicsItem *it : items(vp))
         if (it->type() == LinkItem::Type) return static_cast<LinkItem *>(it);
+    return nullptr;
+}
+
+// The end still waiting for its pair. Looked up, not remembered: it is also found after the project is reopened.
+LinkItem *Canvas::unpairedLink(const LinkItem *except) const {
+    for (QGraphicsItem *it : linksLayer->childItems())
+        if (it->type() == LinkItem::Type && it != except && !static_cast<LinkItem *>(it)->partner) return static_cast<LinkItem *>(it);
     return nullptr;
 }
 
@@ -201,6 +215,14 @@ void Canvas::mousePressEvent(QMouseEvent *e) {
         panning = true;
         lastPan = vp;
         updateCursor();
+        return;
+    }
+    if (e->button() == Qt::RightButton) {
+        // The menu opens on the context-menu event. The view would clear the selection on this press, and the
+        // menu's Selection commands (delete, move to the active layer) would have nothing left to act on.
+        QGraphicsItem *it = itemAt(vp);
+        if (it && it->type() == HandleItem::Type) QGraphicsView::mousePressEvent(e);   // removes the vertex
+        else if (it != scene()->focusItem()) scene()->setFocusItem(nullptr);           // ends a text edit, as any click outside it
         return;
     }
     if (e->button() == Qt::LeftButton && currentTool == Select && !linksVisible) {
@@ -274,10 +296,10 @@ void Canvas::mousePressEvent(QMouseEvent *e) {
         } else if (!layerUsable()) return;
         dragStart = snapped(sp);
         if (currentTool == Link) {
-            if (!alive(pendingLink)) pendingLink = nullptr;
+            const LinkItem *pending = unpairedLink();
             int n = 0;
             for (QGraphicsItem *it : linksLayer->childItems()) n += it->type() == LinkItem::Type;
-            draft = new LinkItem(QRectF(dragStart, dragStart), pendingLink ? pendingLink->color : linkColours[(n / 2) % 5]);
+            draft = new LinkItem(QRectF(dragStart, dragStart), pending ? pending->color : linkColours[(n / 2) % 5]);
             draft->setParentItem(linksLayer);
         } else {
             draft = new ZoneItem(currentTool == ZoneRect ? ZoneItem::Rect : ZoneItem::Ellipse, {dragStart, dragStart}, color);
@@ -382,7 +404,7 @@ void Canvas::mouseReleaseEvent(QMouseEvent *e) {
     if (draft && draft->shapeKind != ZoneItem::Poly) {
         ZoneItem *z = draft;
         draft = nullptr;
-        if (z->boundingRect().width() * zoom() < 4 || z->boundingRect().height() * zoom() < 4) { delete z; return; }
+        if (z->box().width() * zoom() < 4 || z->box().height() * zoom() < 4) { delete z; return; }   // a click, not a drag
         if (z->type() == LinkItem::Type) return finishLink(static_cast<LinkItem *>(z));
         setTool(Select);
         scene()->clearSelection();
@@ -400,11 +422,10 @@ void Canvas::mouseReleaseEvent(QMouseEvent *e) {
 
 void Canvas::finishLink(LinkItem *l) {
     l->id = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
-    if (alive(pendingLink) && pendingLink != l) {
-        l->partner = pendingLink;
-        pendingLink->partner = l;
-        l->name = pendingLink->name;
-        pendingLink = nullptr;
+    if (LinkItem *pending = unpairedLink(l)) {
+        l->partner = pending;
+        pending->partner = l;
+        l->name = pending->name;
         setTool(Select);
         scene()->clearSelection();
         l->setSelected(true);
@@ -413,7 +434,6 @@ void Canvas::finishLink(LinkItem *l) {
         int n = 0;
         for (QGraphicsItem *it : linksLayer->childItems()) n += it->type() == LinkItem::Type;
         l->name = QString("Link %1").arg((n + 1) / 2);
-        pendingLink = l;
         emit status("Now drag its pair. It can be on another map: pan and zoom first if needed.");
     }
     sceneEdited();
@@ -431,7 +451,8 @@ void Canvas::travel(LinkItem *from, QPointF click) {
     if (!to) { emit status("This link has no pair yet: drag one with the Link tool (J)."); return; }
     // The clicked spot lands on the matching spot of the pair, at the same place on screen and the same zoom.
     const QRectF a = from->mapRectToScene(from->box()), b = to->mapRectToScene(to->box());
-    const QPointF rel((click.x() - a.left()) / a.width(), (click.y() - a.top()) / a.height());
+    // a link without area (old projects have them: a click used to make one) sends its centre
+    const QPointF rel(a.width() > 0 ? (click.x() - a.left()) / a.width() : 0.5, a.height() > 0 ? (click.y() - a.top()) / a.height() : 0.5);
     const QPointF target(b.left() + rel.x() * b.width(), b.top() + rel.y() * b.height());
     const QPointF centre = mapToScene(viewport()->rect().center());
     camera.stop();
@@ -529,10 +550,7 @@ void Canvas::deleteSelected() {
             if (LinkItem *p = static_cast<LinkItem *>(i)->partner; p && !doomed.contains(p)) doomed << p;
     }
     const QSet<QGraphicsItem *> unique(doomed.begin(), doomed.end());
-    for (QGraphicsItem *i : unique) {
-        if (i == pendingLink) pendingLink = nullptr;
-        delete i;
-    }
+    qDeleteAll(unique);
     if (!unique.isEmpty()) sceneEdited();
 }
 
@@ -588,12 +606,25 @@ void Canvas::keyReleaseEvent(QKeyEvent *e) {
     QGraphicsView::keyReleaseEvent(e);
 }
 
+void Canvas::focusOutEvent(QFocusEvent *e) {
+    spaceDown = false;   // Space released in another window never gets here: pan mode would stay on
+    updateCursor();
+    QGraphicsView::focusOutEvent(e);
+}
+
 void Canvas::contextMenuEvent(QContextMenuEvent *e) {
     QGraphicsItem *it = itemAt(e->pos());
     if (auto *t = qgraphicsitem_cast<TextItem *>(it); t && t->editing()) return QGraphicsView::contextMenuEvent(e);   // copy/paste menu
     if (it && it->type() == HandleItem::Type) return;   // right click on a vertex removes it
-    while (it && it->parentItem() && it->parentItem()->type() != LayerItem::Type) it = it->parentItem();
-    emit contextMenuRequested(e->pos(), it && it->isSelected() ? it : nullptr);
+    // The topmost item of a layer there. Rulers and hidden links lie over maps and zones without being seen.
+    QGraphicsItem *top = nullptr;
+    for (QGraphicsItem *i : items(e->pos())) {
+        while (i->parentItem() && i->parentItem()->type() != LayerItem::Type) i = i->parentItem();
+        if (!i->parentItem() || (i->type() == LinkItem::Type && !linksVisible)) continue;
+        top = i;
+        break;
+    }
+    emit contextMenuRequested(e->pos(), top && top->isSelected() ? top : nullptr);
 }
 
 void Canvas::dragEnterEvent(QDragEnterEvent *e) {

@@ -79,6 +79,7 @@ QJsonObject itemToJson(QGraphicsItem *it, const QDir &base) {
         o["width"] = s->pen().widthF();
         o["pts"] = pointsToJson(s->pts);
     } else if (auto *t = qgraphicsitem_cast<TextItem *>(it)) {
+        if (t->toPlainText().trimmed().isEmpty()) return {};   // just created, nothing typed yet: it deletes itself when the edit ends
         o["type"] = t->note ? "note" : "text";
         o["text"] = t->toPlainText();
         o["color"] = t->color.name(QColor::HexArgb);

@@ -74,6 +74,7 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent *e) override;
     void keyPressEvent(QKeyEvent *e) override;
     void keyReleaseEvent(QKeyEvent *e) override;
+    void focusOutEvent(QFocusEvent *e) override;
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dragMoveEvent(QDragMoveEvent *e) override;
     void dropEvent(QDropEvent *e) override;
@@ -89,6 +90,7 @@ private:
     QPointF snapped(QPointF p, bool centre = false) const;
     bool alive(QGraphicsItem *it) const;
     LinkItem *linkAt(QPoint viewPos) const;
+    LinkItem *unpairedLink(const LinkItem *except = nullptr) const;
     void eraseAt(QPointF sp);
     void updateRuler(Ruler &r);
     void deleteRuler(int i);
@@ -105,7 +107,7 @@ private:
     QList<Ruler> rulers;
     int dragRuler = -1;
     QGraphicsEllipseItem *eraserRing = nullptr;
-    LinkItem *pressedLink = nullptr, *hoveredLink = nullptr, *pendingLink = nullptr;
+    LinkItem *pressedLink = nullptr, *hoveredLink = nullptr;
     QVariantAnimation camera;
     QHash<QGraphicsItem *, QPointF> pressPositions;
 };

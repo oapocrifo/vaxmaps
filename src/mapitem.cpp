@@ -121,6 +121,7 @@ bool opaque(const QImage &img) {
 
 Built buildPyramid(const QString &path, const QString &dir) {
     Built b;
+    if (quitting) { b.error = "cancelled"; return b; }   // queued behind another build when the program was closed
     QImageReader reader(path);
     QImage img = reader.read();
     if (img.isNull()) { b.error = reader.errorString(); return b; }
@@ -129,19 +130,20 @@ Built buildPyramid(const QString &path, const QString &dir) {
     b.ext = "png";   // lossless: JPEG tiles showed block and colour artifacts at high zoom
     if (!QDir().mkpath(dir)) { b.error = "cannot create " + dir; return b; }
     for (int level = 0;; ++level) {
-        if (quitting) { b.error = "cancelled"; return b; }
         if (img.width() <= TILE && img.height() <= TILE) {
             b.overview = img;
             b.levels = level + 1;
             if (!img.save(dir + "/overview.png")) { b.error = "cannot write the cache"; return b; }
             break;
         }
-        for (int ty = 0; ty * TILE < img.height(); ++ty)
+        for (int ty = 0; ty * TILE < img.height(); ++ty) {
+            if (quitting) { b.error = "cancelled"; return b; }   // per row: closing does not wait for a whole level of a big map
             for (int tx = 0; tx * TILE < img.width(); ++tx) {
                 const QRect r = QRect(tx * TILE - 1, ty * TILE - 1, TILE + 2, TILE + 2) & img.rect();
                 const QString f = QString("%1/%2_%3_%4.%5").arg(dir).arg(level).arg(tx).arg(ty).arg(b.ext);
                 if (!img.copy(r).save(f, nullptr, 80)) { b.error = "cannot write the cache"; return b; }   // PNG quality 80 = zlib level 1: fast
             }
+        }
         img = img.scaled((img.width() + 1) / 2, (img.height() + 1) / 2, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     }
     // meta.json is written last: its presence marks a complete pyramid.
@@ -178,7 +180,8 @@ QSize MapData::levelSize(int level) const {
 QSharedPointer<MapData> MapData::get(const QString &path) {
     const QFileInfo fi(path);
     const QString abs = fi.absoluteFilePath();
-    if (auto m = registry.value(abs)) return m;
+    // A map that failed (file missing when the project was opened) is tried again the next time it is asked for.
+    if (auto m = registry.value(abs); m && m->error.isEmpty()) return m;
     auto m = QSharedPointer<MapData>::create();
     m->path = abs;
     registry.insert(abs, m);

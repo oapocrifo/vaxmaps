@@ -57,6 +57,31 @@ Linux: `cmake -S . -B build && cmake --build build`.
 Tests: `VaxMaps --selftest <folder> [--bench]` (on Linux without a screen: `QT_QPA_PLATFORM=offscreen`).
 The distributed `.exe` is cross-built on Linux with static Qt 6.4.2 and MinGW: see `tools/`.
 
+## Changes in 0.4.1
+
+Bug fixes, no new features. Projects from 0.4 open unchanged.
+
+- New and Open clear the rulers of the previous project.
+- Ctrl+M no longer moves a link out of the Links layer (the link was lost when the project was reopened).
+- The cell size field in a map's properties changes the grid only when its value changes (clicking in and out of it dropped the local corrections and rounded the size).
+- A click without a drag makes no zone or link at zoom 200 % or more.
+- Right click on a polygon vertex removes that vertex also when the mouse moves during the click (the next vertex was the one that went).
+- Double click adds a polygon vertex only within 10 px of an edge, not anywhere inside the zone.
+- Right click on empty canvas keeps the selection, so Delete and Move to the active layer in the menu act on it.
+- Right click on a selected item opens its properties also where a hidden link or a ruler label lies over it.
+- The wheel zooms at the cursor right after a pan (the view jumped by the pan distance), and zooms in again after Fit all on very wide content.
+- Space held while the window loses the focus no longer leaves pan mode on.
+- A link end saved without its pair gets it with New link (J) after the project is reopened.
+- A link without area (a click made one, see above) no longer throws the view to the edge of the canvas.
+- An image that was missing loads when the project is opened again, without restarting the program.
+- Closing the program no longer waits for the maps still being prepared (8 s with four 9000 x 7000 px maps in the test).
+- Esc in the colour dialog closes the dialog, not the popup under it. The dialog's title is in English.
+- Tool keys work after a layer is renamed.
+- Text selected during an edit is not left highlighted. A text with nothing typed is not saved.
+- Dropped files are handled after the drop returns, so the Save question does not freeze the window they came from.
+- Two memory errors: the Show box of the Links layer (use after free), closing the window with an item selected.
+- `tools/build-windows.sh` finds the Qt it has just built (it uses qt-cmake).
+
 ## Licence note
 
 The manual calibration flow and two small formulas (cell size from two corners, circular mean of the clicks) follow Atlas VTT, which is AGPL-3.0. If you distribute Vax Maps, publish it under AGPL-3.0.

@@ -92,12 +92,13 @@ MainWindow::MainWindow() {
         if (it) openProperties(it, at);
         else openMenu(at);
     });
+    // Queued: this may ask to save, and a dialog shown inside the drop freezes the window the files came from.
     connect(canvas, &Canvas::filesDropped, this, [this](const QStringList &files, QPointF pos) {
         for (const QString &f : files)
             if (f.endsWith(".vaxmap", Qt::CaseInsensitive)) { if (maybeSave()) openProject(f); return; }
         for (const QString &f : files)
             if (MapItem *m = importMap(f, pos)) pos.rx() += m->boundingRect().width() + 100;
-    });
+    }, Qt::QueuedConnection);
     qApp->installEventFilter(this);   // closes popups on outside clicks and Esc, keeps overlays placed
 
     newProject();
@@ -108,6 +109,7 @@ MainWindow::MainWindow() {
 MainWindow::~MainWindow() {
     qApp->removeEventFilter(this);
     onSceneEdited = nullptr;
+    scene->disconnect(this);   // it is destroyed after this object's members: deleting a selected item would call back into them
 }
 
 QAction *MainWindow::action(const QString &text, const QKeySequence &keys, std::function<void()> fn) {
@@ -157,7 +159,8 @@ void MainWindow::buildMenu() {
     linksButton = new MenuButton("Show links", "Shift+J");
     linksButton->setCheckable(true);
     connect(linksButton, &QAbstractButton::clicked, this, [this](bool on) { menu->dismiss(); canvas->showLinks(on); });
-    connect(canvas, &Canvas::linksShown, this, [this](bool on) { linksButton->setChecked(on); refreshLayers(); });
+    // Queued: the signal can come from the layer list's own itemChanged, and rebuilding the list there frees the item Qt is using.
+    connect(canvas, &Canvas::linksShown, this, [this](bool on) { linksButton->setChecked(on); refreshLayers(); }, Qt::QueuedConnection);
     grid->addWidget(linksButton, 0, 1, 1, 2);
     connect(canvas, &Canvas::toolChanged, this, [this](int t) { toolButtons[t]->setChecked(true); });
 
@@ -319,7 +322,12 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         form->addWidget(unit, 1, 2);
         v->addLayout(form);
         auto edit = [this, m](auto fn) { fn(m->cal); m->update(); setDirty(true); };
-        connect(cell, &QDoubleSpinBox::editingFinished, this, [edit, cell] { edit([cell](Calibration &c) { c.scaleCell(cell->value()); }); });
+        // editingFinished also comes when the field just loses the focus: an untouched value must not drop the local corrections
+        connect(cell, &QDoubleSpinBox::editingFinished, this, [edit, cell, shown = cell->value()]() mutable {
+            if (cell->value() == shown) return;
+            shown = cell->value();
+            edit([cell](Calibration &c) { c.scaleCell(cell->value()); });
+        });
         connect(per, &QDoubleSpinBox::valueChanged, this, [edit](double x) { edit([x](Calibration &c) { c.unitsPerCell = x; }); });
         connect(unit, &QLineEdit::textChanged, this, [edit](const QString &u) { edit([u](Calibration &c) { c.unit = u; }); });
         auto *grid = new MenuButton("Show the calibrated grid");
@@ -411,7 +419,7 @@ void MainWindow::buildLayersPanel() {
         if (l && l->links) { say("The Links layer stays. Delete its links instead (show them with Shift+J)."); return; }
         if (!l || layers.size() <= 2) return;
         if (!l->childItems().isEmpty()
-            && QMessageBox::question(this, "Vax Maps", QString("Delete the layer \"%1\" and its %2 items?").arg(l->name).arg(l->childItems().size()))
+            && QMessageBox::question(this, "Vax Maps", QString("Delete the layer \"%1\" and its %2 items?").arg(l->name, QString::number(l->childItems().size())))
                    != QMessageBox::Yes)
             return;
         canvas->cancelDrafts();
@@ -442,6 +450,8 @@ void MainWindow::buildLayersPanel() {
     connect(layerList, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *ti, int col) {
         if (col == 2) layerList->editItem(ti, 2);
     });
+    // The list takes no focus, so after a rename nothing had it and the tool keys were dead until a click on the canvas.
+    connect(layerList->itemDelegate(), &QAbstractItemDelegate::closeEditor, canvas, [this] { if (!QApplication::focusWidget()) canvas->setFocus(); });
     connect(layerList, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *ti, int col) {
         if (refreshing) return;
         LayerItem *l = layerOf(ti);
@@ -498,9 +508,12 @@ bool MainWindow::eventFilter(QObject *o, QEvent *e) {
         }
         return swallow;
     }
-    if (e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape)
+    if (e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
+        auto *w = qobject_cast<QWidget *>(o);
+        if (!w || w->window() != this) return false;   // Esc in a dialog over the popup (the colour picker) is for the dialog
         for (Panel *p : {props, menu})
             if (p->isShown()) { p->dismiss(); canvas->setFocus(); return true; }
+    }
     return false;
 }
 
@@ -568,6 +581,7 @@ void MainWindow::importDialog() {
 
 void MainWindow::newProject() {
     canvas->setTool(Canvas::Select);   // ends drafts and a calibration in progress
+    canvas->clearRulers();             // they are not layer items: they would stay over the new project
     props->dismiss();
     qDeleteAll(layers);
     layers.clear();
@@ -595,6 +609,7 @@ bool MainWindow::openProject(const QString &f) {
         return false;
     }
     canvas->setTool(Canvas::Select);   // ends drafts and a calibration in progress
+    canvas->clearRulers();
     props->dismiss();
     qDeleteAll(layers);
     layers = layersFromJson(doc.object(), scene, QFileInfo(f).absoluteDir());
@@ -678,6 +693,7 @@ void MainWindow::moveSelectionToActiveLayer() {
     LayerItem *active = canvas->activeLayer;
     for (QGraphicsItem *it : scene->selectedItems()) {
         if (!it->parentItem() || it->parentItem()->type() != LayerItem::Type || it->parentItem() == active) continue;
+        if (it->type() == LinkItem::Type) continue;   // links live only in the Links layer: elsewhere they are dropped when the project is opened
         const QPointF sp = it->scenePos();
         it->setParentItem(active);
         it->setPos(active->mapFromScene(sp));

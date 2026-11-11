@@ -13,13 +13,18 @@
 #include <QFile>
 #include <QGraphicsScene>
 #include <QContextMenuEvent>
+#include <QDoubleSpinBox>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QTemporaryDir>
+#include <QTextCursor>
 #include <QTextStream>
 #include <QThread>
+#include <QTreeWidget>
+#include <QWheelEvent>
 #include <cmath>
 #include <functional>
 
@@ -221,6 +226,195 @@ bool pixelMatches(Canvas *c, MapItem *m, QPointF local, QColor expected, int tol
                .arg(expected.red()).arg(expected.green()).arg(expected.blue());
     return std::abs(g.red() - expected.red()) <= tol && std::abs(g.green() - expected.green()) <= tol
            && std::abs(g.blue() - expected.blue()) <= tol;
+}
+
+void wheel(Canvas *c, QPoint vp, int delta) {
+    QWheelEvent e(QPointF(vp), QPointF(c->viewport()->mapToGlobal(vp)), QPoint(), QPoint(0, delta), Qt::NoButton, Qt::NoModifier,
+                  Qt::NoScrollPhase, false);
+    QApplication::sendEvent(c->viewport(), &e);
+}
+
+// Bugs fixed in 0.4.1, each with the steps that showed it.
+void regressions(MainWindow &w, const QString &dir, const QString &image) {
+    Canvas *c = w.canvas;
+    c->setTool(Canvas::Measure);
+    drag(c, c->mapToScene(QPoint(200, 200)), c->mapToScene(QPoint(400, 300)), 4);
+    w.newProject();
+    check(c->rulerCount() == 0, "New project clears the rulers");
+    w.activateWindow();
+    c->setFocus();
+
+    c->activeLayer = w.layers[1];
+    c->scale(3, 3);
+    c->setTool(Canvas::ZoneRect);
+    click(c, QPointF(10, 10));
+    c->setTool(Canvas::Link);
+    click(c, QPointF(40, 10));
+    check(w.layers[1]->childItems().isEmpty() && c->linksLayer->childItems().isEmpty(), "a click without a drag makes no zone or link, also at zoom 300%");
+    c->resetTransform();
+    c->centerOn(0, 0);
+
+    drag(c, QPointF(0, 0), QPointF(60, 60), 4);   // one end of a link; the project is saved before its pair exists
+    const QString file = dir + "/regressions.vaxmap";
+    w.saveTo(file);
+    w.openProject(file);
+    c->setTool(Canvas::Link);
+    drag(c, QPointF(200, 0), QPointF(260, 60), 4);
+    QList<LinkItem *> links;
+    for (QGraphicsItem *it : c->linksLayer->childItems())
+        if (it->type() == LinkItem::Type) links << static_cast<LinkItem *>(it);
+    check(links.size() == 2 && links[0]->partner == links[1], "a link saved without its pair gets it after the project is reopened");
+    if (links.size() == 2) {
+        links[0]->setSelected(true);
+        c->activeLayer = w.layers[1];
+        w.moveSelectionToActiveLayer();
+        check(links[0]->parentItem() == c->linksLayer, "Ctrl+M leaves a selected link in the Links layer");
+        const QPointF before = c->mapToScene(c->viewport()->rect().center());
+        links[0]->setPoints({QPointF(0, 0), QPointF(0, 0)});
+        c->travel(links[0], QPointF(0, 0));
+        waitFor([&] { return !c->cameraMoving(); }, 3000);
+        check(QLineF(c->mapToScene(c->viewport()->rect().center()) - before, QPointF(230, 30)).length() < 2,
+              "a link without area (older projects have them) still jumps to its pair");
+    }
+    c->showLinks(false);
+    c->setTool(Canvas::Select);
+    c->resetTransform();
+    c->centerOn(0, 0);
+
+    auto *poly = new ZoneItem(ZoneItem::Poly, QPolygonF({QPointF(-300, -300), QPointF(-100, -300), QPointF(-100, -100), QPointF(-300, -100)}), Qt::red);
+    poly->setParentItem(w.layers[1]);
+    w.scene->clearSelection();
+    poly->setSelected(true);
+    pause(250);   // handles fade in
+    mouse(c, QEvent::MouseButtonPress, QPointF(-100, -300), Qt::RightButton);
+    mouse(c, QEvent::MouseMove, QPointF(-97, -298), Qt::RightButton);
+    mouse(c, QEvent::MouseButtonRelease, QPointF(-97, -298), Qt::RightButton);
+    check(poly->pts == QPolygonF({QPointF(-300, -300), QPointF(-100, -100), QPointF(-300, -100)}),
+          "right click removes the vertex under it, also when the mouse moves a little");
+    auto doubleClick = [&](QPointF p) {
+        mouse(c, QEvent::MouseMove, p, Qt::NoButton);   // a real pointer moves there first: the scene looks up the item under it again
+        click(c, p);
+        mouse(c, QEvent::MouseButtonDblClick, p);
+        mouse(c, QEvent::MouseButtonRelease, p);
+    };
+    doubleClick(QPointF(-233, -167));
+    const int inside = int(poly->pts.size());
+    doubleClick(QPointF(-299, -200));
+    check(inside == 3 && poly->pts.size() == 4, "double click adds a vertex on an edge, not in the middle of the zone");
+    mouse(c, QEvent::MouseButtonPress, QPointF(500, 300), Qt::RightButton);
+    mouse(c, QEvent::MouseButtonRelease, QPointF(500, 300), Qt::RightButton);
+    check(poly->isSelected(), "right click on empty canvas keeps the selection for the menu's commands");
+
+    key(c, Qt::Key_Space, " ");
+    { QFocusEvent away(QEvent::FocusOut, Qt::ActiveWindowFocusReason); QApplication::sendEvent(c, &away); }   // Alt+Tab: the release goes elsewhere
+    { QFocusEvent back(QEvent::FocusIn, Qt::ActiveWindowFocusReason); QApplication::sendEvent(c, &back); }
+    c->activeLayer = w.layers[2];
+    c->setTool(Canvas::Pen);
+    drag(c, QPointF(300, 300), QPointF(400, 300), 4);
+    check(countIn<StrokeItem>(w.layers[2]) == 1, "Space held while the window loses the focus does not leave pan mode on");
+    { QKeyEvent up(QEvent::KeyRelease, Qt::Key_Space, Qt::NoModifier, " "); QApplication::sendEvent(c, &up); }
+    c->setTool(Canvas::Select);
+
+    auto *far = new ZoneItem(ZoneItem::Rect, {QPointF(3e6, 0), QPointF(3e6 + 100, 100)}, Qt::red);
+    far->setParentItem(w.layers[1]);
+    w.fitAll();
+    const double fitted = c->zoom();
+    wheel(c, QPoint(300, 200), 240);
+    check(c->zoom() > fitted, "the wheel zooms in after Fit all on content wider than the zoom range");
+    delete far;
+    c->resetTransform();
+    c->centerOn(0, 0);
+    const QPointF under = c->mapToScene(QPoint(300, 200));
+    wheel(c, QPoint(300, 200), 240);
+    check(c->zoom() > 1 && QLineF(c->mapFromScene(under), QPoint(300, 200)).length() < 2, "the wheel zooms at the cursor");
+    c->resetTransform();
+
+    c->activeLayer = w.layers[0];
+    MapItem *m = w.importMap(image, QPointF(0, -3000));
+    if (m) {
+        m->cal = Calibration::square(70.3712, QPointF(10, 10));
+        m->cal.fieldCols = m->cal.fieldRows = 1;
+        m->cal.fieldStep = QPointF(100, 100);
+        m->cal.field = {QPointF(1, 1)};
+        w.scene->clearSelection();
+        m->setSelected(true);
+        w.openProperties(m, QPoint(60, 60));
+        QDoubleSpinBox *cell = nullptr;
+        for (auto *sp : w.props->findChildren<QDoubleSpinBox *>())
+            if (sp->suffix() == " px") cell = sp;
+        if (cell) emit cell->editingFinished();   // what Qt sends when the field just loses the focus
+        const bool kept = cell && m->cal.field.size() == 1 && m->cal.cellSize() == 70.3712;
+        if (cell) {
+            cell->setValue(80);
+            emit cell->editingFinished();
+        }
+        check(kept && std::abs(m->cal.cellSize() - 80) < 1e-9 && m->cal.field.isEmpty(), "the cell size field changes the grid only when its value changes");
+        key(c, Qt::Key_Escape);
+        auto *over = new LinkItem(QRectF(m->pos() + QPointF(100, 100), QSizeF(100, 100)), Qt::red);
+        over->setParentItem(c->linksLayer);
+        c->showLinks(false);
+        c->centerOn(m->sceneBoundingRect().center());
+        rightClick(c, m->pos() + QPointF(150, 150));
+        check(m->isSelected() && w.props->isShown(), "right click on a selected map opens its properties also where a hidden link lies over it");
+        key(c, Qt::Key_Escape);
+    }
+
+    {   // handled after the drop event returns: the handler may ask to save
+        const int before = countIn<MapItem>(w.layers[0]);
+        QMimeData mime;
+        mime.setUrls({QUrl::fromLocalFile(image)});
+        QDragEnterEvent enter(QPoint(300, 300), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);   // Qt drops only on the widget that took the drag
+        QApplication::sendEvent(c->viewport(), &enter);
+        QDropEvent drop(QPointF(300, 300), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(c->viewport(), &drop);
+        pause(50);
+        check(countIn<MapItem>(w.layers[0]) == before + 1, "an image dropped on the canvas is imported");
+    }
+
+    const QString late = dir + "/late.png";
+    const bool missing = !MapData::get(late)->error.isEmpty();
+    QFile::copy(image, late);
+    check(missing && MapData::get(late)->error.isEmpty(), "a map whose file was missing loads once the file is back and the project is reopened");
+
+    QWidget other;   // stands for the colour dialog
+    w.openMenu(QPoint(80, 80));
+    { QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier); QApplication::sendEvent(&other, &esc); }
+    check(w.menu->isShown(), "Esc typed in another window leaves the popup open");
+    key(c, Qt::Key_Escape);
+
+    key(c, Qt::Key_L, "l");
+    pause(250);
+    auto *tree = w.layersPanel->findChild<QTreeWidget *>();
+    tree->topLevelItem(0)->setCheckState(0, Qt::Checked);   // the Links row
+    pause(50);
+    check(linksVisible && tree->topLevelItemCount() == w.layers.size() && tree->topLevelItem(0)->checkState(0) == Qt::Checked,
+          "the Show box of the Links layer shows the links");
+    tree->editItem(tree->topLevelItem(1), 2);
+    pause(50);
+    if (auto *editor = tree->findChild<QLineEdit *>()) {
+        QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        QApplication::sendEvent(editor, &enter);
+    }
+    pause(50);
+    check(QApplication::focusWidget() == c, "after a layer is renamed the keys go to the canvas again");
+    key(c, Qt::Key_L, "l");
+    c->showLinks(false);
+
+    auto *t = new TextItem(false, Qt::white);
+    t->setParentItem(w.layers[3]);
+    t->setPlainText("Door");
+    t->startEditing();
+    QTextCursor tc = t->textCursor();
+    tc.select(QTextCursor::Document);
+    t->setTextCursor(tc);
+    t->clearFocus();
+    check(!t->editing() && !t->textCursor().hasSelection(), "ending a text edit clears the text selected in it");
+    c->activeLayer = w.layers[3];
+    c->setTool(Canvas::Text);
+    click(c, c->mapToScene(QPoint(700, 700)));   // a new text, nothing typed, then Ctrl+S
+    w.saveTo(file);
+    w.openProject(file);
+    check(countIn<TextItem>(w.layers[3]) == 1, QString("an empty text is not written to the project (%1 text item kept)").arg(countIn<TextItem>(w.layers[3])));
 }
 
 void bench(MainWindow &w, const QString &dir) {
@@ -705,6 +899,7 @@ int runSelfTest(const QStringList &args) {
     settle(c);
     w.grab().save(out + "/vaxmaps-window.png");
 
+    regressions(w, tmp.path(), map2);
     if (args.contains("--bench")) bench(w, tmp.path());
     w.dirty = false;
     say(failures ? QString("\n%1 failure(s)").arg(failures) : "\nAll tests passed.");

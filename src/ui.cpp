@@ -210,7 +210,7 @@ void SwatchRow::mousePressEvent(QMouseEvent *e) {
     grow[i] = -0.4;   // a quick shrink that springs back
     tick->start();
     QColor c = colors[i];
-    if (!c.isValid()) c = QColorDialog::getColor(current.isValid() ? current : Qt::white, this, "Cor");
+    if (!c.isValid()) c = QColorDialog::getColor(current.isValid() ? current : Qt::white, this, "Colour");
     if (!c.isValid()) return;
     current = c;
     emit picked(c);

@@ -132,6 +132,9 @@ void TextItem::focusOutEvent(QFocusEvent *e) {
     // A context menu or switching windows is not the end of the edit (an empty new note would be deleted).
     if (e->reason() == Qt::PopupFocusReason || e->reason() == Qt::ActiveWindowFocusReason) return;
     setTextInteractionFlags(Qt::NoTextInteraction);
+    QTextCursor tc = textCursor();   // text selected during the edit would stay highlighted
+    tc.clearSelection();
+    setTextCursor(tc);
     if (toPlainText().trimmed().isEmpty()) deleteLater();
 }
 
@@ -284,6 +287,9 @@ void ZoneItem::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *e) {
         const double dist = QLineF(a + t * d, e->pos()).length();
         if (dist < bestDist) { bestDist = dist; best = i; }
     }
+    // only on an edge (10 px on screen): a double click in the middle of the zone used to pull a vertex there
+    const auto *view = e->widget() ? qobject_cast<const QGraphicsView *>(e->widget()->parentWidget()) : nullptr;
+    if (view && bestDist * view->transform().m11() > 10) return QGraphicsItem::mouseDoubleClickEvent(e);
     QPolygonF p = pts;
     p.insert(best + 1, e->pos());
     setPoints(p);
@@ -360,6 +366,8 @@ void HandleItem::mousePressEvent(QGraphicsSceneMouseEvent *e) {
 }
 
 void HandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent *e) {
+    // A right click that removes a vertex also grabs the mouse: moving 1 px dragged the next vertex to the cursor.
+    if (!(e->buttons() & Qt::LeftButton)) return;
     QPointF scenePt = zone->mapToScene(zone->mapFromScene(e->scenePos()) - grab);
     if (snapEnabled) scenePt = snapPoint(zone->scene(), scenePt);
     const QPointF p = zone->mapFromScene(scenePt);

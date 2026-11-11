@@ -15,10 +15,13 @@ cmake -S qtbase -B qtbase-build $COMMON -DCMAKE_INSTALL_PREFIX=$QT -DBUILD_SHARE
  -DFEATURE_system_jpeg=OFF -DFEATURE_system_harfbuzz=OFF -DFEATURE_system_freetype=OFF -DFEATURE_system_pcre2=OFF \
  -DFEATURE_system_doubleconversion=OFF
 ninja -C qtbase-build install
-cmake -S qtimageformats -B qtimg-build $COMMON -DCMAKE_PREFIX_PATH=$QT -DCMAKE_INSTALL_PREFIX=$QT \
+# qt-cmake from here on: the toolchain file lets find_package look only under /usr/x86_64-w64-mingw32,
+# so plain cmake with CMAKE_PREFIX_PATH=$QT does not find the Qt just installed. qt-cmake adds it (and keeps the toolchain).
+QTCMAKE="$QT/bin/qt-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release"
+$QTCMAKE -S qtimageformats -B qtimg-build -DCMAKE_INSTALL_PREFIX=$QT \
  -DFEATURE_jasper=OFF -DFEATURE_mng=OFF -DFEATURE_system_webp=OFF -DFEATURE_system_tiff=OFF
 ninja -C qtimg-build install
-cmake -S "$HERE/.." -B vaxmaps-build $COMMON -DCMAKE_PREFIX_PATH=$QT
+$QTCMAKE -S "$HERE/.." -B vaxmaps-build
 ninja -C vaxmaps-build
 x86_64-w64-mingw32-strip vaxmaps-build/VaxMaps.exe
 echo "$W/vaxmaps-build/VaxMaps.exe"
