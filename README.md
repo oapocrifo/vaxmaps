@@ -4,6 +4,8 @@ Canvas infinito para mapas de RPG: vários mapas grandes na mesma página, desen
 
 ## Uso
 
+A janela não tem barras nem painéis fixos. Botão direito no canvas abre o menu com todas as ferramentas e comandos. Botão direito sobre um item selecionado (zona, mapa, texto, nota, traço) abre as propriedades dele.
+
 | Tecla | Ferramenta |
 |---|---|
 | V | Selecionar e mover (Del exclui) |
@@ -15,10 +17,13 @@ Canvas infinito para mapas de RPG: vários mapas grandes na mesma página, desen
 | K | Calibrar mapa (F detecta a grade, setas ajustam, Enter aplica, Esc cancela) |
 | R / O / G | Zona retângulo / círculo / vértices (Shift = quadrado/círculo) |
 | S | Snap na grade do mapa calibrado |
+| L | Mostrar ou esconder o painel de camadas |
+| F11 | Tela cheia |
+| Esc | Fecha o popup aberto |
 
 - Importar mapas: arraste arquivos para a janela ou Ctrl+I. Formatos: PNG, JPG, WebP, TIFF, BMP, GIF.
-- Calibrar (como no Atlas VTT): selecione o mapa e tecle K (ou tecle K e clique no mapa). Clique num canto de um quadrado no quarto destacado e depois no canto seguinte à direita. O programa ajusta a grade às linhas do mapa; se as linhas não confirmarem, pede outra medição no próximo quarto (até 4). F procura a grade sozinho. A grade amarela é a prévia: setas a movem (Shift = 0,1 px), Enter aplica, Esc cancela. Depois de aplicar a grade fica oculta; "Mostrar grade calibrada" em Propriedades a exibe. Cada mapa tem a sua calibração e a régua usa a do mapa onde a medição começa.
-- Zonas: nome, cor e descrição no painel Propriedades. Polígono: duplo clique numa aresta insere vértice, botão direito num vértice remove.
+- Calibrar (como no Atlas VTT): selecione o mapa e tecle K (ou tecle K e clique no mapa). Clique num canto de um quadrado no quarto destacado e depois no canto seguinte à direita. O programa ajusta a grade às linhas do mapa; se as linhas não confirmarem, pede outra medição no próximo quarto (até 4). F procura a grade sozinho. A grade amarela é a prévia: setas a movem (Shift = 0,1 px), Enter aplica, Esc cancela. Depois de aplicar a grade fica oculta; "Mostrar grade calibrada" nas propriedades do mapa a exibe. Cada mapa tem a sua calibração e a régua usa a do mapa onde a medição começa.
+- Zonas: selecione para ver as alças. Os quadrados brancos nos cantos e lados redimensionam (Shift num canto mantém a proporção). No polígono, os pontos azuis movem vértices, duplo clique numa aresta insere vértice e botão direito num vértice remove. Nome, cor e descrição ficam no popup do botão direito.
 - Camadas: novos itens vão para a camada ativa (destacada). "Travar" impede selecionar e mover, e os cliques passam para as camadas de baixo. Ctrl+M move a seleção para a camada ativa.
 
 ## Desempenho (técnicas do PureRef e do Atlas VTT)

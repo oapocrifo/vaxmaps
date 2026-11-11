@@ -2,7 +2,7 @@
 // Grid calibration modelled on Atlas VTT 0.13.1 (GridAlignmentOverlay, IntersectionsTab, gridAlignmentMath):
 // measure one cell by two adjacent corners, let the map's lines make it exact, measure more cells in the
 // other quarters of the map only when the lines do not confirm it; or detect the grid automatically.
-#include <QFrame>
+#include "ui.h"
 #include <QPointer>
 #include <QVector>
 #include <optional>
@@ -14,7 +14,6 @@ class QGraphicsItem;
 class QKeyEvent;
 class QLabel;
 class QLineEdit;
-class QPushButton;
 
 // Line strength of a map summed per column (x) and per row (y), from the image scaled to at most 4096 px.
 struct LineProfiles {
@@ -39,7 +38,7 @@ struct Measurement { QPointF a, b; };   // two adjacent corners of one cell, ima
 GridFit gridFromMeasurements(const QVector<Measurement> &m);
 
 // Panel shown over the canvas while the Calibrate tool is active.
-class Calibrator : public QFrame {
+class Calibrator : public Panel {
     Q_OBJECT
 public:
     explicit Calibrator(Canvas *canvas);
@@ -78,7 +77,7 @@ private:
     QList<QGraphicsItem *> marks;   // children of the map: deleted with it
 
     QLabel *title, *instruction, *progress;
-    QPushButton *detectButton, *applyButton, *againButton;
+    MenuButton *detectButton, *applyButton, *againButton;
     QDoubleSpinBox *perCell;
     QLineEdit *unit;
 };

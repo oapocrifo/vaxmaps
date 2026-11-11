@@ -39,6 +39,9 @@ signals:
     void status(const QString &msg);
     void zoomChanged(double zoom);
     void snapChanged(bool on);
+    // Right click: `selected` is the selected item under the cursor, if any (it gets its properties popup).
+    void contextMenuRequested(QPoint viewPos, QGraphicsItem *selected);
+    void toggleLayersRequested();
     void filesDropped(const QStringList &files, QPointF scenePos);
 
 protected:
@@ -52,6 +55,7 @@ protected:
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dragMoveEvent(QDragMoveEvent *e) override;
     void dropEvent(QDropEvent *e) override;
+    void contextMenuEvent(QContextMenuEvent *e) override;
 
 private:
     QPointF snapped(QPointF p) const;

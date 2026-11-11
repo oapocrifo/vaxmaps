@@ -5,13 +5,16 @@
 #include "items.h"
 #include "mainwindow.h"
 #include "mapitem.h"
+#include "ui.h"
 
 #include <QApplication>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QGraphicsScene>
+#include <QContextMenuEvent>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QTemporaryDir>
@@ -120,6 +123,31 @@ void mouse(Canvas *c, QEvent::Type type, QPointF scenePos, Qt::MouseButton b = Q
     const Qt::MouseButtons held = type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::MouseButtons(b);
     QMouseEvent e(type, vp, c->viewport()->mapToGlobal(vp), type == QEvent::MouseMove ? Qt::NoButton : b, held, mods);
     QApplication::sendEvent(c->viewport(), &e);
+}
+
+// Drag in view pixels (handles are hit by their on-screen position).
+void dragView(Canvas *c, QPoint a, QPoint b, Qt::KeyboardModifiers mods = {}) {
+    auto send = [&](QEvent::Type t, QPoint p, Qt::MouseButton btn, Qt::MouseButtons held) {
+        QMouseEvent e(t, p, c->viewport()->mapToGlobal(p), btn, held, mods);
+        QApplication::sendEvent(c->viewport(), &e);
+    };
+    send(QEvent::MouseButtonPress, a, Qt::LeftButton, Qt::LeftButton);
+    for (int i = 1; i <= 8; ++i) send(QEvent::MouseMove, a + (b - a) * i / 8, Qt::NoButton, Qt::LeftButton);
+    send(QEvent::MouseButtonRelease, b, Qt::LeftButton, Qt::NoButton);
+}
+
+void rightClick(Canvas *c, QPointF scenePos) {
+    const QPoint vp = c->mapFromScene(scenePos);
+    QContextMenuEvent e(QContextMenuEvent::Mouse, vp, c->viewport()->mapToGlobal(vp));
+    QApplication::sendEvent(c->viewport(), &e);
+}
+
+void pause(int ms) { QElapsedTimer t; t.start(); while (t.elapsed() < ms) { QCoreApplication::processEvents(QEventLoop::AllEvents, 10); QThread::msleep(5); } }
+
+template <class T> T *findIn(QWidget *w, const QString &text) {
+    for (T *b : w->findChildren<T *>())
+        if (b->text() == text) return b;
+    return nullptr;
 }
 
 void drag(Canvas *c, QPointF a, QPointF b, int steps = 10) {
@@ -286,7 +314,7 @@ int runSelfTest(const QStringList &args) {
     m1->setSelected(true);
     c->setTool(Canvas::Calibrate);
     Calibrator *cal = c->calibrator;
-    check(cal->target() == m1 && cal->isVisible(), "Calibrar com o mapa selecionado abre o painel nele");
+    check(cal->target() == m1 && cal->isShown(), "Calibrar com o mapa selecionado abre o painel nele");
     mouse(c, QEvent::MouseButtonPress, m1->mapToScene(QPointF(2400, 300)));   // outside the top-left quarter
     mouse(c, QEvent::MouseButtonRelease, m1->mapToScene(QPointF(2400, 300)));
     mouse(c, QEvent::MouseButtonPress, m1->mapToScene(QPointF(152, 148)));    // ~2 px off the corner (150, 150)
@@ -303,7 +331,7 @@ int runSelfTest(const QStringList &args) {
     w.grab().save(out + "/vaxmaps-calibracao.png");
     key(c, Qt::Key_Return);
     check(m1->cal.valid() && std::abs(m1->cal.cellPx - 100) < 0.05 && !m1->preview && !m1->cal.showGrid && c->tool() == Canvas::Select
-              && !cal->isVisible(),
+              && !cal->isShown(),
           "Enter aplica: calibração salva, grade some, painel fecha");
     m1->setSelected(true);
     c->setTool(Canvas::Calibrate);
@@ -360,6 +388,78 @@ int runSelfTest(const QStringList &args) {
         zs[0]->setDesc("Dois guardas.\nPorta secreta ao norte.");
         zs[1]->name = "Poço";
         zs[1]->color = QColor(40, 120, 255);
+
+        // resize after creation: box handles sit 11 px outside the box
+        w.scene->clearSelection();
+        zs[0]->setSelected(true);
+        pause(250);   // handles fade in; fully transparent items take no clicks
+        const QPoint br = c->mapFromScene(zs[0]->mapToScene(QPointF(400, 700))) + QPoint(11, 11);
+        dragView(c, br, br + QPoint(50, 60));
+        check(QRectF(zs[0]->pts[0], zs[0]->pts[1]).normalized() == QRectF(QPointF(200, 600), QPointF(450, 760)),
+              "zona retangular redimensionada pela alça do canto");
+        const QPoint right = c->mapFromScene(zs[0]->mapToScene(QPointF(450, 680))) + QPoint(11, 0);
+        dragView(c, right, right + QPoint(-30, 0));
+        check(zs[0]->box() == QRectF(QPointF(200, 600), QPointF(420, 760)), "zona redimensionada pela alça do lado");
+        const QPoint tl = c->mapFromScene(zs[0]->mapToScene(QPointF(200, 600))) + QPoint(-11, -11);
+        dragView(c, tl, tl + QPoint(-40, 0), Qt::ShiftModifier);
+        check(std::abs(zs[0]->box().width() / zs[0]->box().height() - 220.0 / 160) < 0.01 && zs[0]->box().bottomRight() == QPointF(420, 760),
+              "Shift no canto mantém a proporção");
+        w.scene->clearSelection();
+        zs[2]->setSelected(true);
+        pause(250);
+        const QPoint ptl = c->mapFromScene(zs[2]->mapToScene(QPointF(750, 550))) + QPoint(-11, -11);
+        dragView(c, ptl, ptl + QPoint(-50, -50));
+        check(zs[2]->box() == QRectF(QPointF(700, 500), QPointF(950, 750)) && zs[2]->pts[2] == QPointF(825, 750),
+              QString("polígono redimensionado pela caixa, vértices em escala (caixa %1,%2 %3x%4, vértice 3 em %5,%6)")
+                  .arg(zs[2]->box().x()).arg(zs[2]->box().y()).arg(zs[2]->box().width()).arg(zs[2]->box().height())
+                  .arg(zs[2]->pts[2].x()).arg(zs[2]->pts[2].y()));
+        const QPoint v0 = c->mapFromScene(zs[2]->mapToScene(QPointF(700, 500)));
+        dragView(c, v0, v0 + QPoint(20, 20));
+        check(zs[2]->pts[0] == QPointF(720, 520), "vértice do polígono continua arrastável");
+
+        // right click: properties of the selected zone
+        w.scene->clearSelection();
+        zs[0]->setSelected(true);
+        rightClick(c, zs[0]->mapToScene(zs[0]->box().center()));
+        pause(300);
+        auto *nameEdit = w.props->findChild<QLineEdit *>();
+        check(w.props->isShown() && w.props->isVisible() && !w.menu->isShown() && nameEdit && nameEdit->text() == "Sala do trono",
+              "botão direito na zona selecionada abre as propriedades dela");
+        if (nameEdit) nameEdit->setText("Sala do trono!");
+        check(zs[0]->name == "Sala do trono!", "nome editado no popup muda a zona");
+        if (nameEdit) nameEdit->setText("Sala do trono");
+        w.grab().save(out + "/vaxmaps-propriedades.png");
+        key(c, Qt::Key_Escape);
+        pause(300);
+        check(!w.props->isShown() && !w.props->isVisible(), "Esc fecha o popup com animação de saída");
+
+        // right click elsewhere: the menu with every command
+        rightClick(c, QPointF(1300, 900));
+        pause(300);
+        check(w.menu->isShown() && w.menu->isVisible() && !w.props->isShown(), "botão direito fora da seleção abre o menu");
+        w.grab().save(out + "/vaxmaps-menu.png");
+        if (auto *pen = findIn<MenuButton>(w.menu, "Caneta")) pen->click();
+        check(c->tool() == Canvas::Pen && !w.menu->isShown(), "ferramenta escolhida no menu, menu fecha");
+        rightClick(c, QPointF(1300, 900));
+        pause(250);
+        const int strokes = countIn<StrokeItem>(w.layers[1]);
+        c->activeLayer = zones;
+        drag(c, QPointF(1300, 850), QPointF(1350, 850));
+        check(!w.menu->isShown(), "clique fora fecha o menu");
+        check(countIn<StrokeItem>(zones) == strokes, "o clique que fecha o menu não desenha");
+        c->setTool(Canvas::Select);
+
+        key(c, Qt::Key_L, "l");
+        pause(300);
+        check(w.layersPanel->isShown() && w.layersPanel->isVisible(), "L mostra o painel de camadas");
+        w.grab().save(out + "/vaxmaps-camadas.png");
+        key(c, Qt::Key_L, "l");
+        pause(300);
+        check(!w.layersPanel->isVisible(), "L de novo esconde as camadas");
+        w.fullScreenAction->trigger();
+        check(w.isFullScreen(), "F11 liga a tela cheia");
+        w.fullScreenAction->trigger();
+        check(!w.isFullScreen(), "F11 de novo volta à janela");
     }
     c->setTool(Canvas::Measure);
     drag(c, m1->mapToScene(QPointF(50, 50)), m1->mapToScene(QPointF(650, 50)), 3);

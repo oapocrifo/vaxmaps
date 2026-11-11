@@ -1,10 +1,12 @@
 #include "items.h"
 #include "canvas.h"
+#include "ui.h"
 
 #include <QGraphicsScene>
 #include <QFocusEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QPainter>
+#include <QPropertyAnimation>
 #include <QPen>
 #include <QStyleOptionGraphicsItem>
 #include <QTextCursor>
@@ -138,8 +140,6 @@ ZoneItem::ZoneItem(Shape shape, const QPolygonF &pts, const QColor &color)
     setFlags(ItemIsSelectable | ItemIsMovable);
 }
 
-ZoneItem::~ZoneItem() { syncing = true; }   // children (handles) die after us: ignore their position updates
-
 QPainterPath ZoneItem::outline() const {
     QPainterPath path;
     if (shapeKind == Poly) {
@@ -159,7 +159,14 @@ void ZoneItem::paint(QPainter *p, const QStyleOptionGraphicsItem *o, QWidget *) 
     fill.setAlpha(60);
     QPen pen(color, 2);
     pen.setCosmetic(true);
-    if (isSelected()) pen.setStyle(Qt::DashLine);
+    if (isSelected()) {
+        pen.setStyle(Qt::DashLine);
+        if (shapeKind != Rect) {   // the box the resize handles act on
+            p->setPen(QPen(QColor(255, 255, 255, 90), 0, Qt::DotLine));
+            p->setBrush(Qt::NoBrush);
+            p->drawRect(box());
+        }
+    }
     p->setPen(pen);
     p->setBrush(fill);
     p->drawPath(outline());
@@ -188,37 +195,56 @@ void ZoneItem::setPoints(const QPolygonF &p) {
     syncHandles();
 }
 
-QPolygonF ZoneItem::handlePositions() const {
-    if (shapeKind == Poly) return pts;
-    const QRectF r = QRectF(pts[0], pts[1]).normalized();
-    return {r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()};
-}
-
 void ZoneItem::syncHandles() {
-    if (handles.isEmpty()) return;
-    syncing = true;
-    const QPolygonF pos = handlePositions();
-    for (int i = 0; i < pos.size(); ++i) {
-        if (i == handles.size()) handles << new HandleItem(this, i);
-        handles[i]->setPos(pos[i]);
-        handles[i]->setVisible(true);
+    if (boxHandles.isEmpty()) return;
+    const QRectF b = box();
+    const QPointF c = b.center();
+    const QPointF at[8] = {b.topLeft(), {c.x(), b.top()}, b.topRight(), {b.right(), c.y()},
+                           b.bottomRight(), {c.x(), b.bottom()}, b.bottomLeft(), {b.left(), c.y()}};
+    for (int i = 0; i < 8; ++i) boxHandles[i]->setPos(at[i]);
+    const int n = shapeKind == Poly ? int(pts.size()) : 0;
+    for (int i = 0; i < n; ++i) {
+        if (i == vertexHandles.size()) vertexHandles << new HandleItem(this, true, i);
+        vertexHandles[i]->setPos(pts[i]);
+        vertexHandles[i]->setVisible(true);
     }
-    for (int i = pos.size(); i < handles.size(); ++i) handles[i]->setVisible(false);   // deleted on deselect
-    syncing = false;
+    for (int i = n; i < vertexHandles.size(); ++i) vertexHandles[i]->setVisible(false);   // a handle may be mid-click: hide, don't delete
 }
 
-void ZoneItem::moveHandle(int i, QPointF p) {
-    if (syncing) return;
-    prepareGeometryChange();
-    if (shapeKind == Poly) {
-        pts[i] = p;
-    } else {
-        const QPolygonF c = handlePositions();
-        pts = {p, c[(i + 2) % 4]};   // the opposite corner stays put
+void ZoneItem::beginDrag() {
+    startPts = pts;
+    startBox = box();
+}
+
+void ZoneItem::dragBox(int id, QPointF p, bool keepAspect) {
+    const QRectF r = startBox;
+    if (r.width() <= 0 || r.height() <= 0) return;
+    const bool left = id == 0 || id == 6 || id == 7, right = id >= 2 && id <= 4;
+    const bool top = id <= 2, bottom = id >= 4 && id <= 6;
+    double x1 = r.left(), x2 = r.right(), y1 = r.top(), y2 = r.bottom();
+    if (left) x1 = p.x();
+    if (right) x2 = p.x();
+    if (top) y1 = p.y();
+    if (bottom) y2 = p.y();
+    if (keepAspect && (left || right) && (top || bottom)) {   // Shift on a corner: same proportions
+        double sx = (x2 - x1) / r.width(), sy = (y2 - y1) / r.height();
+        const double s = std::max(std::abs(sx), std::abs(sy));
+        sx = sx < 0 ? -s : s;
+        sy = sy < 0 ? -s : s;
+        if (left) x1 = x2 - sx * r.width(); else x2 = x1 + sx * r.width();
+        if (top) y1 = y2 - sy * r.height(); else y2 = y1 + sy * r.height();
     }
-    update();
-    syncHandles();
-    sceneEdited();
+    if (std::abs(x2 - x1) < 2 || std::abs(y2 - y1) < 2) return;
+    QPolygonF out;
+    for (const QPointF &q : startPts)
+        out << QPointF(x1 + (q.x() - r.left()) * (x2 - x1) / r.width(), y1 + (q.y() - r.top()) * (y2 - y1) / r.height());
+    setPoints(out);
+}
+
+void ZoneItem::dragVertex(int i, QPointF p) {
+    QPolygonF out = pts;
+    out[i] = p;
+    setPoints(out);
 }
 
 void ZoneItem::removeVertex(int i) {
@@ -232,11 +258,13 @@ void ZoneItem::removeVertex(int i) {
 QVariant ZoneItem::itemChange(GraphicsItemChange change, const QVariant &value) {
     if (change == ItemSelectedHasChanged) {
         if (value.toBool()) {
-            handles << new HandleItem(this, 0);
+            for (int i = 0; i < 8; ++i) boxHandles << new HandleItem(this, false, i);
             syncHandles();
         } else {
-            qDeleteAll(handles);
-            handles.clear();
+            qDeleteAll(boxHandles);
+            qDeleteAll(vertexHandles);
+            boxHandles.clear();
+            vertexHandles.clear();
         }
     }
     return QGraphicsItem::itemChange(change, value);
@@ -262,24 +290,84 @@ void ZoneItem::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *e) {
 
 // ---- HandleItem ----
 
-HandleItem::HandleItem(ZoneItem *zone, int index) : QGraphicsRectItem(-5, -5, 10, 10, zone), index(index), zone(zone) {
-    setFlags(ItemIsMovable | ItemIgnoresTransformations | ItemSendsGeometryChanges);
-    setBrush(Qt::white);
-    setPen(QPen(Qt::black, 0));
-    setCursor(Qt::SizeAllCursor);
-    setToolTip(zone->shapeKind == ZoneItem::Poly ? "Arraste para mover. Botão direito remove o vértice." : "Arraste para redimensionar.");
+HandleItem::HandleItem(ZoneItem *zone, bool vertex, int index) : QGraphicsObject(zone), vertex(vertex), index(index), zone(zone) {
+    setFlag(ItemIgnoresTransformations);   // same size on screen at any zoom
+    setAcceptHoverEvents(true);
+    setZValue(vertex ? 2 : 1);
+    static const Qt::CursorShape cursors[8] = {Qt::SizeFDiagCursor, Qt::SizeVerCursor, Qt::SizeBDiagCursor, Qt::SizeHorCursor,
+                                               Qt::SizeFDiagCursor, Qt::SizeVerCursor, Qt::SizeBDiagCursor, Qt::SizeHorCursor};
+    setCursor(vertex ? Qt::SizeAllCursor : cursors[index]);
+    setToolTip(vertex ? "Arraste para mover o vértice. Botão direito remove."
+                      : "Arraste para redimensionar. Shift num canto mantém a proporção.");
+    setOpacity(0);
+    auto *a = new QPropertyAnimation(this, "opacity", this);   // handles fade in when the zone is selected
+    a->setDuration(160);
+    a->setEndValue(1.0);
+    a->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
-QVariant HandleItem::itemChange(GraphicsItemChange change, const QVariant &value) {
-    if (change == ItemPositionChange && snapEnabled && scene() && scene()->mouseGrabberItem() == this)
-        return zone->mapFromScene(snapPoint(scene(), zone->mapToScene(value.toPointF())));
-    if (change == ItemPositionHasChanged) zone->moveHandle(index, value.toPointF());
-    return QGraphicsRectItem::itemChange(change, value);
+QPointF HandleItem::outward() const {
+    if (vertex) return {};
+    static const QPointF dir[8] = {{-1, -1}, {0, -1}, {1, -1}, {1, 0}, {1, 1}, {0, 1}, {-1, 1}, {-1, 0}};
+    return dir[index] * 11;
 }
+
+QRectF HandleItem::boundingRect() const { return QRectF(-8, -8, 16, 16).translated(outward()); }
+
+QPainterPath HandleItem::shape() const {   // exact hit area: a polygon vertex on the box corner stays reachable
+    QPainterPath p;
+    if (vertex) p.addEllipse(QPointF(), 7, 7);
+    else p.addRect(QRectF(-6, -6, 12, 12).translated(outward()));
+    return p;
+}
+
+void HandleItem::paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) {
+    p->setRenderHint(QPainter::Antialiasing);
+    p->translate(outward());
+    if (vertex) {
+        p->setPen(QPen(Qt::white, 1.5));
+        p->setBrush(ui::accent);
+        p->drawEllipse(QPointF(), 5, 5);
+    } else {
+        p->setPen(QPen(QColor(20, 20, 24), 1));
+        p->setBrush(Qt::white);
+        p->drawRoundedRect(QRectF(-4.5, -4.5, 9, 9), 2, 2);
+    }
+}
+
+void HandleItem::grow(double to) {
+    auto *a = new QPropertyAnimation(this, "scale", this);
+    a->setDuration(130);
+    a->setEasingCurve(QEasingCurve::OutCubic);
+    a->setEndValue(to);
+    a->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
+void HandleItem::hoverEnterEvent(QGraphicsSceneHoverEvent *) { grow(1.4); }
+void HandleItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *) { grow(1.0); }
 
 void HandleItem::mousePressEvent(QGraphicsSceneMouseEvent *e) {
-    if (e->button() == Qt::RightButton) { zone->removeVertex(index); return; }
-    QGraphicsRectItem::mousePressEvent(e);
+    if (e->button() == Qt::RightButton) {
+        if (vertex) zone->removeVertex(index);
+        return;   // accepted: the canvas shows no menu for it
+    }
+    if (e->button() != Qt::LeftButton) return e->ignore();
+    grab = zone->mapFromScene(e->scenePos()) - pos();
+    moved = false;
+    zone->beginDrag();
+}
+
+void HandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent *e) {
+    QPointF scenePt = zone->mapToScene(zone->mapFromScene(e->scenePos()) - grab);
+    if (snapEnabled) scenePt = snapPoint(zone->scene(), scenePt);
+    const QPointF p = zone->mapFromScene(scenePt);
+    if (vertex) zone->dragVertex(index, p);
+    else zone->dragBox(index, p, e->modifiers() & Qt::ShiftModifier);
+    moved = true;
+}
+
+void HandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent *) {
+    if (moved) sceneEdited();
 }
 
 // ---- LabelItem ----

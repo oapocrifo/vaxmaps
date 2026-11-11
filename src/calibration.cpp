@@ -16,7 +16,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPen>
-#include <QPushButton>
 #include <QSet>
 #include <QThreadPool>
 #include <QVBoxLayout>
@@ -191,17 +190,15 @@ GridFit gridFromMeasurements(const QVector<Measurement> &m) {
 
 // ---- panel ----
 
-Calibrator::Calibrator(Canvas *c) : QFrame(c), canvas(c) {
-    setFrameShape(QFrame::StyledPanel);
-    setAutoFillBackground(true);
-    setFixedWidth(330);
-    auto *v = new QVBoxLayout(this);
+Calibrator::Calibrator(Canvas *c) : Panel(c, false), canvas(c) {
+    setFixedWidth(360);
+    QVBoxLayout *v = body;
     title = new QLabel;
     QFont f = title->font();
     f.setBold(true);
     title->setFont(f);
     v->addWidget(title);
-    detectButton = new QPushButton("Encontrar grade automaticamente (F)");
+    detectButton = new MenuButton("Encontrar grade automaticamente", "F");
     v->addWidget(detectButton);
     instruction = new QLabel;
     instruction->setWordWrap(true);
@@ -221,22 +218,22 @@ Calibrator::Calibrator(Canvas *c) : QFrame(c), canvas(c) {
     distance->addWidget(unit);
     v->addLayout(distance);
     auto *buttons = new QHBoxLayout;
-    applyButton = new QPushButton("Aplicar (Enter)");
-    againButton = new QPushButton("Medir de novo");
-    auto *cancel = new QPushButton("Cancelar (Esc)");
-    for (QPushButton *b : {detectButton, applyButton, againButton, cancel}) b->setFocusPolicy(Qt::NoFocus);   // keys stay on the canvas
+    applyButton = new MenuButton("Aplicar", "Enter");
+    againButton = new MenuButton("Medir de novo");
+    auto *cancel = new MenuButton("Cancelar", "Esc");
+    applyButton->setCheckable(true);   // shown lit while a result waits to be applied
     buttons->addWidget(applyButton);
     buttons->addWidget(againButton);
     buttons->addWidget(cancel);
     v->addLayout(buttons);
-    connect(detectButton, &QPushButton::clicked, this, &Calibrator::autoDetect);
-    connect(applyButton, &QPushButton::clicked, this, &Calibrator::apply);
-    connect(againButton, &QPushButton::clicked, this, &Calibrator::measureAgain);
-    connect(cancel, &QPushButton::clicked, this, [this] { canvas->setTool(Canvas::Select); });
+    connect(detectButton, &QAbstractButton::clicked, this, &Calibrator::autoDetect);
+    connect(applyButton, &QAbstractButton::clicked, this, &Calibrator::apply);
+    connect(againButton, &QAbstractButton::clicked, this, &Calibrator::measureAgain);
+    connect(cancel, &QAbstractButton::clicked, this, [this] { canvas->setTool(Canvas::Select); });
     connect(unit, &QLineEdit::editingFinished, canvas, [this] { canvas->setFocus(); });
     connect(perCell, &QDoubleSpinBox::editingFinished, canvas, [this] { canvas->setFocus(); });
-    move(12, 12);
-    hide();
+    instruction->setStyleSheet(QString("color: %1;").arg(ui::text.name()));
+    progress->setStyleSheet(QString("color: %1;").arg(ui::muted.name()));
 }
 
 void Calibrator::setText(const QString &s) {
@@ -246,8 +243,7 @@ void Calibrator::setText(const QString &s) {
 
 void Calibrator::start(MapItem *selected) {
     stop();
-    show();
-    raise();
+    popUp(QPoint(6, 6), QPoint(-14, 0));
     title->setText("Calibrar grade");
     progress->clear();
     applyButton->setEnabled(false);
@@ -267,7 +263,8 @@ void Calibrator::stop() {
     pointA.reset();
     result.reset();
     waitingFit = waitingDetect = false;
-    hide();
+    applyButton->setChecked(false);
+    dismiss();
 }
 
 void Calibrator::choose(MapItem *m) {
@@ -292,6 +289,7 @@ void Calibrator::reset() {
     map->preview.reset();
     map->update();
     applyButton->setEnabled(false);
+    applyButton->setChecked(false);
 }
 
 void Calibrator::measureAgain() {
@@ -435,6 +433,7 @@ void Calibrator::setResult(const GridFit &g, const QString &how) {
     emit canvas->zoomChanged(canvas->zoom());
     progress->clear();
     applyButton->setEnabled(true);
+    applyButton->setChecked(true);
     setText(QString("Grade %1: quadrado de %2 px.\nConfira a grade amarela (dê zoom). Setas movem a grade, Shift + setas em 0,1 px. Enter aplica.")
                 .arg(how, QLocale(QLocale::Portuguese, QLocale::Brazil).toString(g.cell, 'f', 2)));
 }

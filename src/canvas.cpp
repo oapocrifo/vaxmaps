@@ -4,6 +4,7 @@
 #include "mapitem.h"
 
 #include <QLocale>
+#include <QContextMenuEvent>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QScrollBar>
@@ -351,6 +352,9 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
                                        {Qt::Key_R, ZoneRect}, {Qt::Key_O, ZoneEllipse}, {Qt::Key_G, ZonePoly}};
     if (keys.contains(e->key()) && !(e->modifiers() & Qt::ShiftModifier)) { setTool(keys[e->key()]); return; }
     switch (e->key()) {
+    case Qt::Key_L:
+        emit toggleLayersRequested();
+        return;
     case Qt::Key_S:
         snapEnabled = !snapEnabled;
         emit snapChanged(snapEnabled);
@@ -380,6 +384,14 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
 void Canvas::keyReleaseEvent(QKeyEvent *e) {
     if (e->key() == Qt::Key_Space && !e->isAutoRepeat()) { spaceDown = false; updateCursor(); return; }
     QGraphicsView::keyReleaseEvent(e);
+}
+
+void Canvas::contextMenuEvent(QContextMenuEvent *e) {
+    QGraphicsItem *it = itemAt(e->pos());
+    if (auto *t = qgraphicsitem_cast<TextItem *>(it); t && t->editing()) return QGraphicsView::contextMenuEvent(e);   // copy/paste menu
+    if (it && it->type() == HandleItem::Type) return;   // right click on a vertex removes it
+    while (it && it->parentItem() && it->parentItem()->type() != LayerItem::Type) it = it->parentItem();
+    emit contextMenuRequested(e->pos(), it && it->isSelected() ? it : nullptr);
 }
 
 void Canvas::dragEnterEvent(QDragEnterEvent *e) {

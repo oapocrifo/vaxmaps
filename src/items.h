@@ -59,7 +59,6 @@ public:
     enum Shape { Rect, Ellipse, Poly };
     enum { Type = UserType + 4 };
     ZoneItem(Shape shape, const QPolygonF &pts, const QColor &color);
-    ~ZoneItem() override;
     int type() const override { return Type; }
     QRectF boundingRect() const override;
     QPainterPath shape() const override { return outline(); }
@@ -67,7 +66,12 @@ public:
     QPainterPath outline() const;
     void setPoints(const QPolygonF &p);
     void setDesc(const QString &d) { desc = d; setToolTip(d); }
-    void moveHandle(int i, QPointF p);
+    QRectF box() const { return outline().boundingRect(); }
+    // Box handles 0..7 (TL, T, TR, R, BR, B, BL, L) resize the whole zone from the opposite side;
+    // vertex handles move one polygon vertex. `p` is in item coordinates.
+    void beginDrag();
+    void dragBox(int id, QPointF p, bool keepAspect);
+    void dragVertex(int i, QPointF p);
     void removeVertex(int i);
 
     Shape shapeKind;
@@ -78,21 +82,35 @@ protected:
     QVariant itemChange(GraphicsItemChange change, const QVariant &value) override;
     void mouseDoubleClickEvent(QGraphicsSceneMouseEvent *e) override;
 private:
-    QPolygonF handlePositions() const;
     void syncHandles();
-    QList<HandleItem *> handles;
-    bool syncing = false;
+    QList<HandleItem *> boxHandles, vertexHandles;   // children: deleted with the zone
+    QPolygonF startPts;
+    QRectF startBox;
 };
 
-class HandleItem : public QGraphicsRectItem {
+class HandleItem : public QGraphicsObject {
+    Q_OBJECT
 public:
-    HandleItem(ZoneItem *zone, int index);
+    enum { Type = UserType + 6 };
+    HandleItem(ZoneItem *zone, bool vertex, int index);
+    int type() const override { return Type; }
+    QRectF boundingRect() const override;
+    QPainterPath shape() const override;
+    void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override;
+    const bool vertex;
     int index;
 protected:
-    QVariant itemChange(GraphicsItemChange change, const QVariant &value) override;
+    void hoverEnterEvent(QGraphicsSceneHoverEvent *) override;
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent *) override;
     void mousePressEvent(QGraphicsSceneMouseEvent *e) override;
+    void mouseMoveEvent(QGraphicsSceneMouseEvent *e) override;
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent *e) override;
 private:
+    void grow(double to);
+    QPointF outward() const;   // box handles sit a few px outside the box so polygon vertices stay clickable
     ZoneItem *zone;
+    QPointF grab;              // press point minus handle point, so the shape does not jump
+    bool moved = false;
 };
 
 // Screen-sized label with a dark background (ruler readout, hints).
