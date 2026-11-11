@@ -104,10 +104,19 @@ QPointF Calibration::nearestCorner(QPointF p) const {
     return best;
 }
 
-int Calibration::steps(QPoint from, QPoint to) const {
-    const int du = to.x() - from.x(), dv = to.y() - from.y();
-    if (!isHex()) return std::max(std::abs(du), std::abs(dv));
-    return (std::abs(du) + std::abs(dv) + std::abs(du + dv)) / 2;
+double Calibration::steps(QPoint from, QPoint to) const {
+    const int du = std::abs(to.x() - from.x()), dv = std::abs(to.y() - from.y());
+    if (isHex()) {
+        const int su = to.x() - from.x(), sv = to.y() - from.y();
+        return (du + dv + std::abs(su + sv)) / 2;
+    }
+    const int diag = std::min(du, dv), straight = std::max(du, dv) - diag;
+    switch (diagonal) {
+    case Alternating: return straight + diag + diag / 2;   // every second diagonal costs 2
+    case Straight: return std::hypot(du, dv);
+    case One: break;
+    }
+    return std::max(du, dv);
 }
 
 QString Calibration::noun(int count) const {

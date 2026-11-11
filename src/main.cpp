@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QIcon>
 #include <QImageReader>
 #include <QLocale>
 #include <QPalette>
@@ -19,6 +20,7 @@ int main(int argc, char **argv) {
     // The self-test gets its own cache, settings and recovery copy: it never touches the user's.
     QApplication::setApplicationName(selfTest ? "Vax Maps selftest" : "Vax Maps");
     QApplication::setOrganizationName("VaxMaps");
+    QApplication::setWindowIcon(QIcon(":/vaxmaps.png"));
     const QString language = QSettings().value("language").toString();   // first run: the system's language
     setPortuguese(!selfTest && (language.isEmpty() ? QLocale::system().language() == QLocale::Portuguese : language == "pt"));
     QImageReader::setAllocationLimit(0);   // battle maps often exceed Qt's 256 MB decode limit
@@ -46,7 +48,7 @@ int main(int argc, char **argv) {
         rc = runSelfTest(app.arguments());
     } else {
         MainWindow w;
-        w.show();
+        w.restoreSession();   // shows it
         const QStringList args = app.arguments();
         if (!w.offerRecovery() && args.size() > 1 && args[1].endsWith(".vaxmap", Qt::CaseInsensitive)) w.openFromUi(args[1]);
         rc = app.exec();

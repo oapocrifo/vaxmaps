@@ -122,6 +122,24 @@ private:
     bool moved = false;
 };
 
+// A creature or object on the map: a disc `cells` squares wide with its name. Dragged, it lands on the grid
+// (see snapToken in canvas.h).
+class TokenItem : public QGraphicsItem {
+public:
+    enum { Type = UserType + 8 };
+    TokenItem(const QString &name, const QColor &color, double diameter, int cells);
+    int type() const override { return Type; }
+    QRectF boundingRect() const override;
+    QPainterPath shape() const override;
+    void paint(QPainter *p, const QStyleOptionGraphicsItem *o, QWidget *w) override;
+    void setDiameter(double d) { prepareGeometryChange(); diameter = d; }
+    QPointF centre() const { return mapToScene(QPointF(0, 0)); }
+    QString name;
+    QColor color;
+    double diameter;   // item units
+    int cells;
+};
+
 // Links: pairs of areas; clicking one moves the camera to the other at the same zoom. They are invisible (but
 // clickable) unless `linksVisible` is on, which is also when they can be selected, resized and deleted.
 extern bool linksVisible;

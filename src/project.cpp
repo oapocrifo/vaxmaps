@@ -27,6 +27,7 @@ const int formatVersion = 3;
 QJsonObject calToJson(const Calibration &c) {
     QJsonObject o{{"type", gridNames[c.grid]}, {"ox", c.origin.x()}, {"oy", c.origin.y()}, {"ax", c.a.x()}, {"ay", c.a.y()},
                   {"bx", c.b.x()}, {"by", c.b.y()}, {"perCell", c.unitsPerCell}, {"unit", c.unit}, {"show", c.showGrid}};
+    if (c.diagonal != Calibration::One) o["diag"] = c.diagonal == Calibration::Alternating ? "alternating" : "straight";
     if (!c.field.isEmpty())
         o["field"] = QJsonObject{{"x0", c.fieldOrigin.x()}, {"y0", c.fieldOrigin.y()}, {"dx", c.fieldStep.x()}, {"dy", c.fieldStep.y()},
                                  {"cols", c.fieldCols}, {"rows", c.fieldRows}, {"d", pointsToJson(c.field)}};
@@ -58,6 +59,8 @@ Calibration calFromJson(const QJsonObject &o, int version) {
     }
     c.unitsPerCell = o["perCell"].toDouble(1.5);
     c.unit = o["unit"].toString("m");
+    const QString diag = o["diag"].toString();
+    c.diagonal = diag == "alternating" ? Calibration::Alternating : diag == "straight" ? Calibration::Straight : Calibration::One;
     return c;
 }
 
@@ -67,6 +70,7 @@ QJsonObject itemToJson(QGraphicsItem *it, const QDir &base, bool strokePoints = 
         o["type"] = "map";
         o["path"] = base.relativeFilePath(m->src->path);
         if (m->cal.valid()) o["cal"] = calToJson(m->cal);
+        if (!m->fog.isNull()) o["fog"] = QString::fromLatin1(m->fogPng.toBase64());
     } else if (it->type() == LinkItem::Type) {
         auto *l = static_cast<LinkItem *>(it);
         o["type"] = "link";
@@ -80,6 +84,12 @@ QJsonObject itemToJson(QGraphicsItem *it, const QDir &base, bool strokePoints = 
         o["color"] = s->pen().color().name(QColor::HexArgb);
         o["width"] = s->pen().widthF();
         if (strokePoints) o["pts"] = pointsToJson(s->pts);
+    } else if (auto *k = qgraphicsitem_cast<TokenItem *>(it)) {
+        o["type"] = "token";
+        o["name"] = k->name;
+        o["color"] = k->color.name(QColor::HexArgb);
+        o["d"] = k->diameter;
+        o["cells"] = k->cells;
     } else if (auto *t = qgraphicsitem_cast<TextItem *>(it)) {
         if (t->toPlainText().trimmed().isEmpty()) return {};   // just created, nothing typed yet: it deletes itself when the edit ends
         o["type"] = t->note ? "note" : "text";
@@ -104,6 +114,10 @@ QGraphicsItem *itemFromJson(const QJsonObject &o, const QDir &base, int version)
     QGraphicsItem *it = nullptr;
     if (type == "map") {
         auto *m = new MapItem(base.absoluteFilePath(o["path"].toString()));
+        if (const QByteArray png = QByteArray::fromBase64(o["fog"].toString().toLatin1()); !png.isEmpty()) {
+            m->fog = QImage::fromData(png, "png").convertToFormat(QImage::Format_Alpha8);
+            if (!m->fog.isNull()) m->fogPng = png;   // kept as read: undo steps do not encode it again
+        }
         const QJsonObject c = o["cal"].toObject();
         if (!c.isEmpty()) m->cal = calFromJson(c, version);
         it = m;
@@ -119,6 +133,10 @@ QGraphicsItem *itemFromJson(const QJsonObject &o, const QDir &base, int version)
         auto *s = new StrokeItem(QColor(o["color"].toString()), o["width"].toDouble(4));
         s->setPoints(pointsFromJson(o["pts"].toArray()));
         it = s;
+    } else if (type == "token") {
+        const double d = o["d"].toDouble();
+        if (!(d > 0)) return nullptr;
+        it = new TokenItem(o["name"].toString(), QColor(o["color"].toString()), d, qBound(1, o["cells"].toInt(1), 4));
     } else if (type == "text" || type == "note") {
         auto *t = new TextItem(type == "note", QColor(o["color"].toString()));
         t->setPlainText(o["text"].toString());

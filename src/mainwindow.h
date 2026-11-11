@@ -45,6 +45,13 @@ public:
     void paste();                                       // at the mouse pointer
     void duplicate();
     bool exportView(const QString &file);               // what the canvas shows, without the selection marks
+    // `area` (scene) at the maps' own resolution, scaled down to 100 megapixels at most. Returns the image size, empty on failure.
+    QSize exportFull(const QString &file, const QRectF &area);
+    bool savePackage(const QString &zipFile);          // the project and its images in one .zip
+    bool openPackage(const QString &zipFile);          // extracts next to the .zip, then opens the project
+    void restoreSession();                              // window, tool, colour, panels as at the last close; shows the window
+    void saveSession();
+    void showShortcuts();
     QList<QGraphicsItem *> findNamed(const QString &text) const;   // zones and links whose name contains it
     void goTo(QGraphicsItem *item);
     int locateImage(MapItem *map, const QString &path); // also the other missing images found in that folder; returns how many
@@ -85,6 +92,8 @@ private:
     void open();
     void importDialog();
     void exportDialog();
+    void exportFullDialog();
+    void packageDialog();
     void askMissingImages();
     QVBoxLayout *newPopup();     // empties the properties popup for other content
     void showRecent();
@@ -102,7 +111,8 @@ private:
     QTreeWidget *layerList = nullptr;
     bool refreshing = false, wasMaximized = false, ownsRecovery = false;
     QList<MenuButton *> toolButtons;
-    MenuButton *snapButton, *layersButton, *fullButton, *linksButton, *languageButton;
+    MenuButton *snapButton, *layersButton, *fullButton, *linksButton, *languageButton, *fogButton, *minimapButton;
+    QWidget *minimap;
     SwatchRow *menuSwatches;
     QSlider *widthSlider;
     QLabel *widthLabel;

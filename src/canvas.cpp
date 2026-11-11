@@ -39,6 +39,8 @@ QString toolHint(Canvas::Tool t) {
     case Canvas::ZoneEllipse: return T("Circle zone: drag. Shift keeps it round.");
     case Canvas::ZonePoly: return T("Vertex zone: click each vertex. Double click, Enter or a click on the first vertex closes it.");
     case Canvas::Link: return T("Link: drag an area, then drag its pair (it can be on another map).");
+    case Canvas::Token: return T("Token: click to place one. Dragged, it lands on the grid. Right click it for its name and size.");
+    case Canvas::Fog: return T("Fog brush: drag to reveal, Alt + drag to cover. The width slider sets its size.");
     }
     return {};
 }
@@ -77,7 +79,7 @@ Span measureSpan(QGraphicsScene *s, QPointF a, QPointF b) {
 QString spanText(const Span &s) {
     if (!s.ok) return T("Map not calibrated (K)");
     const QString noun = T(s.hex ? (s.steps == 1 ? "hex" : "hexes") : (s.steps == 1 ? "square" : "squares"));
-    return QString("%1 %2 · %3 %4").arg(s.steps).arg(noun, fmt(s.distance), s.unit);
+    return QString("%1 %2 · %3 %4").arg(fmt(s.steps), noun, fmt(s.distance), s.unit);
 }
 
 QString totalText(const QVector<Span> &spans) {
@@ -97,6 +99,16 @@ QString totalText(const QVector<Span> &spans) {
 }
 
 QString measureText(QGraphicsScene *s, QPointF a, QPointF b) { return spanText(measureSpan(s, a, b)); }
+
+void snapToken(TokenItem *t) {
+    MapItem *m = t->scene() ? mapAt(t->scene(), t->centre(), true) : nullptr;
+    if (!m) return;
+    const Calibration &c = m->cal;
+    t->setDiameter(c.cellSize() * t->cells * 0.9 * m->scale() / t->scale());
+    const QPointF l = m->mapFromScene(t->centre());
+    const QPointF target = !c.isHex() && t->cells % 2 == 0 ? c.nearestCorner(l) : c.cellCentre(c.cellAt(l));
+    t->setPos(t->pos() + m->mapToScene(target) - t->centre());   // layers have no transform: scene offsets are position offsets
+}
 
 Canvas::Canvas(QGraphicsScene *scene, QWidget *parent) : QGraphicsView(scene, parent) {
     setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform | QPainter::TextAntialiasing);
@@ -127,6 +139,7 @@ void Canvas::setTool(Tool t) {
     currentTool = t;
     setDragMode(t == Select ? RubberBandDrag : NoDrag);
     eraserRing->setVisible(false);
+    fogging = false;
     if (t == Link && !linksVisible) showLinks(true);
     updateCursor();
     emit toolChanged(t);
@@ -267,7 +280,9 @@ void Canvas::mousePressEvent(QMouseEvent *e) {
         return;
     }
     case Measure: {
-        const QPointF p = snapped(sp, true);
+        QPointF p = snapped(sp, true);
+        for (QGraphicsItem *it : items(vp))   // a ruler started on a token measures from its centre
+            if (auto *k = qgraphicsitem_cast<TokenItem *>(it)) { p = k->centre(); break; }
         dragRuler = -1;
         for (int i = 0; i < rulers.size(); ++i)   // grabbing a ruler's end adds a turn to it
             if (QLineF(mapFromScene(rulers[i].pts.last()), vp).length() < 14) dragRuler = i;
@@ -288,6 +303,26 @@ void Canvas::mousePressEvent(QMouseEvent *e) {
     }
     case Calibrate:
         calibrator->mousePress(sp);
+        return;
+    case Token: {
+        if (!layerUsable()) return;
+        int n = 0;
+        for (QGraphicsItem *it : activeLayer->childItems()) n += it->type() == TokenItem::Type;
+        auto *k = new TokenItem(QString::number(n + 1), color, 40 / zoom(), 1);   // 40 px on screen where no map is calibrated
+        k->setParentItem(activeLayer);
+        k->setPos(sp);
+        snapToken(k);
+        scene()->clearSelection();
+        k->setSelected(true);
+        sceneEdited();
+        return;
+    }
+    case Fog:
+        fogging = true;
+        fogCover = e->modifiers() & Qt::AltModifier;
+        fogLast = sp;
+        fogTouched.clear();
+        fogTo(sp);
         return;
     case ZoneRect:
     case ZoneEllipse:
@@ -348,6 +383,13 @@ void Canvas::mouseMoveEvent(QMouseEvent *e) {
         }
     }
     if (pressedLink) return;
+    if (currentTool == Fog) {
+        const double r = fogWidth() / 2;
+        eraserRing->setRect(QRectF(sp - QPointF(r, r), QSizeF(2 * r, 2 * r)));
+        eraserRing->show();
+        if (fogging) fogTo(sp);
+        return;
+    }
     if (currentTool == Eraser) {
         const double r = 12 / zoom();
         eraserRing->setRect(QRectF(sp - QPointF(r, r), QSizeF(2 * r, 2 * r)));
@@ -394,6 +436,13 @@ void Canvas::mouseReleaseEvent(QMouseEvent *e) {
     }
     if (stroke) { stroke = nullptr; sceneEdited(); return; }
     if (erasing) { erasing = false; if (erasedAny) sceneEdited(); return; }
+    if (fogging) {
+        fogging = false;
+        for (MapItem *m : fogTouched)
+            if (alive(m)) m->fogStrokeDone();
+        if (!fogTouched.isEmpty()) sceneEdited();
+        return;
+    }
     if (dragRuler >= 0) {
         Ruler &r = rulers[dragRuler];
         if (QLineF(mapFromScene(r.pts[r.pts.size() - 2]), mapFromScene(r.pts.last())).length() < 3) r.pts.removeLast();
@@ -415,8 +464,13 @@ void Canvas::mouseReleaseEvent(QMouseEvent *e) {
     }
     QGraphicsView::mouseReleaseEvent(e);
     if (currentTool == Select) {
+        bool moved = false;
         for (auto it = pressPositions.cbegin(); it != pressPositions.cend(); ++it)
-            if (alive(it.key()) && it.key()->pos() != it.value()) { sceneEdited(); break; }
+            if (alive(it.key()) && it.key()->pos() != it.value()) {
+                moved = true;
+                if (auto *k = qgraphicsitem_cast<TokenItem *>(it.key())) snapToken(k);
+            }
+        if (moved) sceneEdited();
         pressPositions.clear();
     }
 }
@@ -502,6 +556,23 @@ void Canvas::eraseAt(QPointF sp) {
     }
 }
 
+void Canvas::fogTo(QPointF sp) {
+    const double w = fogWidth();
+    const QRectF reach = QRectF(fogLast, sp).normalized().adjusted(-w, -w, w, w);
+    for (QGraphicsItem *it : scene()->items(reach)) {
+        auto *m = qgraphicsitem_cast<MapItem *>(it);
+        if (!m || !m->isVisible()) continue;
+        if (m->fog.isNull()) {
+            if (!fogCover) continue;   // revealing a map without fog does nothing; covering gives it fog
+            m->enableFog(false);
+            if (m->fog.isNull()) continue;
+        }
+        m->paintFog(m->mapFromScene(fogLast), m->mapFromScene(sp), w / m->scale(), fogCover);
+        if (!fogTouched.contains(m)) fogTouched << m;
+    }
+    fogLast = sp;
+}
+
 void Canvas::updateRuler(Ruler &r) {
     QPainterPath path(r.pts[0]);
     for (int i = 1; i < r.pts.size(); ++i) path.lineTo(r.pts[i]);
@@ -574,7 +645,8 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
     // Tool letters live here instead of QAction shortcuts so typing in a text item never switches tools.
     static const QHash<int, Tool> keys{{Qt::Key_V, Select}, {Qt::Key_H, Pan}, {Qt::Key_P, Pen}, {Qt::Key_E, Eraser},
                                        {Qt::Key_T, Text}, {Qt::Key_N, Note}, {Qt::Key_M, Measure}, {Qt::Key_K, Calibrate},
-                                       {Qt::Key_R, ZoneRect}, {Qt::Key_O, ZoneEllipse}, {Qt::Key_G, ZonePoly}, {Qt::Key_J, Link}};
+                                       {Qt::Key_R, ZoneRect}, {Qt::Key_O, ZoneEllipse}, {Qt::Key_G, ZonePoly}, {Qt::Key_J, Link},
+                                       {Qt::Key_B, Token}, {Qt::Key_F, Fog}};
     if (keys.contains(e->key()) && !(e->modifiers() & Qt::ShiftModifier)) { setTool(keys[e->key()]); return; }
     switch (e->key()) {
     case Qt::Key_L:

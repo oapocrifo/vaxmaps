@@ -1,6 +1,6 @@
 #!/bin/sh
 # Cross-compiles VaxMaps.exe on Ubuntu 24.04: static Qt 6.4.2 (qtbase + qtimageformats) with MinGW-w64.
-# apt install qt6-base-dev qt6-base-dev-tools g++-mingw-w64-x86-64-posix cmake ninja-build
+# apt install qt6-base-dev qt6-base-dev-tools g++-mingw-w64-x86-64-posix nsis cmake ninja-build
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd); W=${W:-$PWD/winbuild}; QT=$W/qt-win
 mkdir -p "$W" && cd "$W"
@@ -24,4 +24,8 @@ ninja -C qtimg-build install
 $QTCMAKE -S "$HERE/.." -B vaxmaps-build
 ninja -C vaxmaps-build
 x86_64-w64-mingw32-strip vaxmaps-build/VaxMaps.exe
+VERSION=$(sed -n 's/^project(VaxMaps VERSION \([0-9.]*\).*/\1/p' "$HERE/../CMakeLists.txt")
+makensis -V2 -DVERSION="$VERSION" -DEXE="$W/vaxmaps-build/VaxMaps.exe" -DREADME="$HERE/../README.md" \
+ -DOUTFILE="$W/VaxMaps-$VERSION-setup.exe" "$HERE/installer.nsi"
 echo "$W/vaxmaps-build/VaxMaps.exe"
+echo "$W/VaxMaps-$VERSION-setup.exe"

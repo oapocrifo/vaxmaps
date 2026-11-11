@@ -139,6 +139,49 @@ void TextItem::focusOutEvent(QFocusEvent *e) {
     if (toPlainText().trimmed().isEmpty()) deleteLater();
 }
 
+// ---- TokenItem ----
+
+TokenItem::TokenItem(const QString &name, const QColor &color, double diameter, int cells)
+    : name(name), color(color), diameter(diameter), cells(cells) {
+    setFlags(ItemIsSelectable | ItemIsMovable);
+}
+
+QRectF TokenItem::boundingRect() const {
+    const double r = diameter / 2;
+    return QRectF(-r * 1.6, -r - 2, r * 3.2, diameter * 1.45 + 4);   // the name sits under the disc and may be wider
+}
+
+QPainterPath TokenItem::shape() const {
+    QPainterPath path;
+    path.addEllipse(QPointF(0, 0), diameter / 2, diameter / 2);
+    return path;
+}
+
+void TokenItem::paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) {
+    const double r = diameter / 2;
+    p->setRenderHint(QPainter::Antialiasing);
+    p->setPen(QPen(isSelected() ? QColor(80, 160, 255) : QColor(255, 255, 255), diameter * (isSelected() ? 0.09 : 0.06)));
+    p->setBrush(color);
+    p->drawEllipse(QPointF(0, 0), r * 0.94, r * 0.94);
+    QFont f = p->font();
+    f.setBold(true);
+    f.setPixelSize(qMax(1, int(diameter * 0.38)));
+    p->setFont(f);
+    p->setPen(color.lightnessF() > 0.6 ? Qt::black : Qt::white);
+    p->drawText(QRectF(-r, -r, diameter, diameter), Qt::AlignCenter, name.left(2));   // the start of the name, or its number
+    if (name.size() <= 2) return;
+    f.setPixelSize(qMax(1, int(diameter * 0.22)));
+    p->setFont(f);
+    const QRectF label(-r * 1.6, r + 1, r * 3.2, diameter * 0.4);
+    const QString shown = QFontMetricsF(f).elidedText(name, Qt::ElideRight, label.width());
+    QPainterPath text;
+    text.addText(label.center().x() - QFontMetricsF(f).horizontalAdvance(shown) / 2, label.top() + QFontMetricsF(f).ascent(), f, shown);
+    p->setPen(QPen(QColor(0, 0, 0, 200), diameter * 0.05, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p->setBrush(Qt::NoBrush);
+    p->drawPath(text);   // dark outline: readable on any map
+    p->fillPath(text, Qt::white);
+}
+
 // ---- ZoneItem ----
 
 ZoneItem::ZoneItem(Shape shape, const QPolygonF &pts, const QColor &color)

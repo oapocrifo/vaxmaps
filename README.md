@@ -57,6 +57,22 @@ Linux: `cmake -S . -B build && cmake --build build`.
 Tests: `VaxMaps --selftest <folder> [--bench]` (on Linux without a screen: `QT_QPA_PLATFORM=offscreen`).
 The distributed `.exe` is cross-built on Linux with static Qt 6.4.2 and MinGW: see `tools/`.
 
+## New in 0.6
+
+- **Tokens** (B): a click puts a numbered disc on the square clicked. Dragged, it lands on the centre of a square (on a corner when it is 2x2 or 4x4). Right click it for its name, colour and size (1x1 to 4x4). A ruler started on a token measures from its centre.
+- **Fog of war**, for the game master's screen: in a map's properties, **Cover the map with fog**. The **fog brush** (F) reveals where it passes, Alt + drag covers again. Its size is 10 times the pen width. **Opaque fog** in the menu switches between hiding the map and only darkening it; the choice is saved with the project.
+- **Find** (Ctrl+F) also looks in zone descriptions, in texts and notes, and in token names.
+- **Cell size typed in**: in the calibration panel, type the cell size in px and press **Use**. The arrows move the grid before Enter applies it. Hexes typed in are pointy-top.
+- **Diagonal rule** per map, in its properties: a diagonal counts 1 (D&D 5e), 1-2-1 (5/10/5 ft), or the straight-line distance.
+- The fit of a measured grid to the map's lines runs in the background: the window no longer stops for 0.5 to 1 s after each measurement on a big map.
+- **Save package…**: the project and all its images in one .zip. Opening the .zip (Open, drop, double click) extracts it to a new folder beside it and opens the project.
+- **Export full size…**: the selection, or the visible area, at the maps' own resolution (at most 100 megapixels).
+- The window, tool, colour, width, the Layers panel and the minimap are as they were at the last close.
+- **Shortcuts** (F1): every key and mouse gesture.
+- **Minimap** in the lower left corner: the whole project and the visible area. A click or a drag moves the view.
+- Program icon, also for .vaxmap files.
+- **Installer** (`VaxMaps-0.6.0-setup.exe`): installs for the current user only (no administrator rights) in `%LOCALAPPDATA%\Programs\Vax Maps`, adds a Start menu entry, and makes a double click on a .vaxmap open it. Uninstall from Windows Settings. The program is not signed: Windows SmartScreen warns the first time.
+
 ## New in 0.5
 
 - **Undo and redo**: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z), 100 steps. Every edit counts, a deleted map comes back with its calibration. Edits less than 0.4 s apart are one step. A step reuses the strokes that did not change: with 20 000 strokes it takes 3 ms and almost no memory.

@@ -45,6 +45,13 @@ public:
 
     QSharedPointer<MapData> src;
     Calibration cal;
+    // Fog of war: 255 where the map is covered. At most 2048 px wide or high, stretched over the map.
+    QImage fog;
+    QByteArray fogPng;   // fog as saved in the project; made again when a brush stroke ends (setFog)
+    void enableFog(bool covered);                         // a new fog, all covered or all revealed
+    void setFog(const QImage &mask);                       // loaded from a project or an undo step
+    void paintFog(QPointF a, QPointF b, double width, bool cover);   // item coordinates
+    void fogStrokeDone();
     std::optional<Calibration> preview;   // grid being calibrated, drawn in yellow until applied
 
 private:
@@ -53,6 +60,9 @@ private:
     void drawFallback(QPainter *p, int level, int tx, int ty);
     QSize shownSize;
 };
+
+extern bool fogOpaque;   // the GM's view: fog hides the map, or only darkens it
+extern bool syncTiles;   // tiles load before painting returns (export at full resolution)
 
 // Decoded tiles waiting or loading (for tests and benchmarks).
 int tileLoadsBusy();

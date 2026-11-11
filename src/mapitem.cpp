@@ -2,6 +2,7 @@
 #include "lang.h"
 
 #include <QApplication>
+#include <QBuffer>
 #include <QCache>
 #include <QCryptographicHash>
 #include <QDir>
@@ -20,6 +21,9 @@
 #include <atomic>
 #include <cmath>
 #include <deque>
+
+bool fogOpaque = false;
+bool syncTiles = false;
 
 namespace {
 
@@ -93,6 +97,13 @@ const QImage *tileImage(const QSharedPointer<MapData> &m, int level, int tx, int
     Loader &ld = loader();
     const QString key = QString("%1/%2/%3/%4").arg(m->dir).arg(level).arg(tx).arg(ty);
     if (QImage *img = ld.cache.object(key)) return img;
+    if (syncTiles && !ld.failed.contains(key)) {
+        QImage img(tileFile(m.data(), level, tx, ty));
+        if (img.isNull()) { ld.failed.insert(key); return nullptr; }
+        auto *kept = new QImage(img.convertToFormat(displayFormat(img)));
+        ld.cache.insert(key, kept, qMax<qsizetype>(1, kept->sizeInBytes() / 1024));
+        return ld.cache.object(key);
+    }
     if (!request || ld.inFlight.contains(key) || ld.failed.contains(key)) return nullptr;
     auto it = std::find_if(ld.pending.begin(), ld.pending.end(), [&](const Request &r) { return r.key == key; });
     if (it != ld.pending.end()) ld.pending.erase(it);
@@ -281,6 +292,40 @@ int MapItem::levelFor(double screenScale, int levels) {
     return qBound(0, int(std::floor(std::log2(1.0 / screenScale))), levels - 1);
 }
 
+void MapItem::enableFog(bool covered) {
+    const QSize s = src->size;
+    if (!src->ready || s.isEmpty()) return;   // still being prepared: its size is not known yet
+    fog = QImage(s.scaled(QSize(2048, 2048).boundedTo(s), Qt::KeepAspectRatio), QImage::Format_Alpha8);
+    fog.fill(covered ? 255 : 0);
+    fogStrokeDone();
+}
+
+void MapItem::setFog(const QImage &mask) {
+    fog = mask.isNull() ? QImage() : mask.convertToFormat(QImage::Format_Alpha8);
+    fogStrokeDone();
+    update();
+}
+
+void MapItem::paintFog(QPointF a, QPointF b, double width, bool cover) {
+    if (fog.isNull()) return;
+    const double fx = fog.width() / boundingRect().width(), fy = fog.height() / boundingRect().height();
+    QPainter p(&fog);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setCompositionMode(cover ? QPainter::CompositionMode_Source : QPainter::CompositionMode_Clear);
+    p.setPen(QPen(QColor(0, 0, 0, 255), width * fx, Qt::SolidLine, Qt::RoundCap));
+    const QPointF o = boundingRect().topLeft();
+    p.drawLine(QPointF((a.x() - o.x()) * fx, (a.y() - o.y()) * fy), QPointF((b.x() - o.x()) * fx, (b.y() - o.y()) * fy));
+    update();
+}
+
+void MapItem::fogStrokeDone() {
+    fogPng.clear();
+    if (fog.isNull()) return;
+    QBuffer buf(&fogPng);
+    buf.open(QIODevice::WriteOnly);
+    fog.save(&buf, "png");
+}
+
 QRectF MapItem::tileRect(int level, int tx, int ty) const {
     const QSize ls = src->levelSize(level);
     const double fx = src->size.width() / double(ls.width()), fy = src->size.height() / double(ls.height());
@@ -350,6 +395,13 @@ void MapItem::paint(QPainter *p, const QStyleOptionGraphicsItem *opt, QWidget *w
         }
         const Calibration *g = preview ? &*preview : (cal.showGrid && cal.valid() ? &cal : nullptr);
         if (g) drawGrid(p, *g, opt->exposedRect & full, s, preview ? QColor(255, 220, 0, 230) : QColor(0, 230, 255, 150));
+    }
+    if (!fog.isNull()) {   // an alpha-only image: drawn as black where covered
+        p->save();
+        p->setOpacity(fogOpaque ? 1 : 0.6);
+        p->setRenderHint(QPainter::SmoothPixmapTransform);
+        p->drawImage(full, fog);
+        p->restore();
     }
     if (isSelected()) {
         p->setPen(QPen(QColor(80, 160, 255), 0, Qt::DashLine));

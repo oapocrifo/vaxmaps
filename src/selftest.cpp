@@ -7,6 +7,8 @@
 #include "mainwindow.h"
 #include "mapitem.h"
 #include "project.h"
+
+#include <QtGui/private/qzipwriter_p.h>
 #include "ui.h"
 
 #include <QApplication>
@@ -701,6 +703,256 @@ void additions(MainWindow &w, const QString &dir, const QString &image) {
           "back to English");
 }
 
+// What 0.6 added.
+void version06(MainWindow &w, const QString &dir, const QString &map1, const QString &map2) {
+    Canvas *c = w.canvas;
+    auto maps = [&] {
+        QList<MapItem *> r;
+        for (QGraphicsItem *it : w.layers[0]->childItems())
+            if (auto *m = qgraphicsitem_cast<MapItem *>(it)) r << m;
+        return r;
+    };
+    auto altDrag = [&](QPointF a, QPointF b) {
+        mouse(c, QEvent::MouseButtonPress, a, Qt::LeftButton, Qt::AltModifier);
+        for (int i = 1; i <= 8; ++i) {
+            const QPointF vp = c->mapFromScene(a + (b - a) * (i / 8.0));
+            QMouseEvent e(QEvent::MouseMove, vp, c->viewport()->mapToGlobal(vp), Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+            QApplication::sendEvent(c->viewport(), &e);
+        }
+        mouse(c, QEvent::MouseButtonRelease, b, Qt::LeftButton, Qt::AltModifier);
+    };
+
+    // diagonal rules
+    Calibration sq = Calibration::square(100, QPointF(0, 0));
+    const double one = sq.steps(QPoint(0, 0), QPoint(3, 3));
+    sq.diagonal = Calibration::Alternating;
+    const double alternating = sq.steps(QPoint(0, 0), QPoint(3, 3)), alternating2 = sq.steps(QPoint(0, 0), QPoint(2, 2));
+    sq.diagonal = Calibration::Straight;
+    const double straight = sq.steps(QPoint(0, 0), QPoint(3, 4));
+    check(one == 3 && alternating == 4 && alternating2 == 3 && straight == 5, "diagonal rules: 3 diagonal steps count 3, 4 (1-2-1) or the straight line");
+
+    w.newProject();
+    c->activeLayer = w.layers[0];
+    MapItem *m = w.importMap(map1, QPointF(1500, 1000));   // top-left at 0,0
+    waitFor([&] { return m->src->ready; }, 60000);
+    m->cal = Calibration::square(100, QPointF(50, 50));
+    m->cal.diagonal = Calibration::Alternating;
+    const QString ruler = measureText(w.scene, QPointF(100, 100), QPointF(400, 400));
+    check(ruler == "4 squares · 6 m", "the ruler follows the map's diagonal rule: " + ruler);
+
+    // tokens
+    c->activeLayer = w.layers[1];
+    c->resetTransform();
+    c->centerOn(500, 500);
+    c->setTool(Canvas::Token);
+    click(c, QPointF(530, 470));
+    QList<TokenItem *> tokens;
+    for (QGraphicsItem *it : w.layers[1]->childItems())
+        if (auto *k = qgraphicsitem_cast<TokenItem *>(it)) tokens << k;
+    TokenItem *k = tokens.value(0);
+    check(tokens.size() == 1 && k->name == "1" && QLineF(k->centre(), QPointF(500, 500)).length() < 0.01 && std::abs(k->diameter - 90) < 0.01,
+          "a token lands on the centre of the square clicked, 90% of a square wide");
+    if (!k) return;
+    c->setTool(Canvas::Select);
+    drag(c, QPointF(500, 500), QPointF(737, 822));
+    check(QLineF(k->centre(), QPointF(700, 800)).length() < 0.01, "a dragged token lands on the centre of a square");
+    k->cells = 2;
+    k->moveBy(-20, -20);   // nearer the top-left corner of its square
+    snapToken(k);
+    check(QLineF(k->centre(), QPointF(650, 750)).length() < 0.01 && std::abs(k->diameter - 180) < 0.01, "a 2x2 token sits on a corner and is 2 squares wide");
+    k->name = "Goblin chief";
+    c->setTool(Canvas::Measure);
+    drag(c, QPointF(660, 760), QPointF(1050, 750));   // started on the token, off its centre
+    check(c->rulerText(0) == "4 squares · 6 m", "a ruler started on a token measures from its centre: " + c->rulerText(0));
+    c->setTool(Canvas::Select);
+
+    // find in text
+    auto *z = new ZoneItem(ZoneItem::Rect, {QPointF(1200, 100), QPointF(1400, 300)}, Qt::red);
+    z->setParentItem(w.layers[1]);
+    z->setDesc("A chest with 40 gold pieces");
+    auto *note = new TextItem(true, Qt::yellow);
+    note->setParentItem(w.layers[3]);
+    note->setPlainText("Trap: DC 15\nPoison needle");
+    check(w.findNamed("gold").value(0) == z && w.findNamed("needle").value(0) == note && w.findNamed("chief").value(0) == k,
+          "Find looks in zone descriptions, note texts and token names");
+
+    // fog of war
+    m->enableFog(true);
+    const QImage fog0 = m->fog;
+    c->resetTransform();
+    c->centerOn(1500, 1000);
+    c->setTool(Canvas::Fog);
+    drag(c, QPointF(1000, 1000), QPointF(2000, 1000));   // 400 px brush at 100% zoom: penWidth 4 x 10 / zoom... (40 px)
+    auto fogAt = [&](MapItem *mm, QPointF p) {
+        const QImage &f = mm->fog;
+        return qAlpha(f.pixel(int(p.x() * f.width() / mm->boundingRect().width()), int(p.y() * f.height() / mm->boundingRect().height())));
+    };
+    check(fog0.width() == 2048 && fogAt(m, QPointF(1500, 1000)) == 0 && fogAt(m, QPointF(1500, 1100)) == 255 && fogAt(m, QPointF(500, 1000)) == 255,
+          "the fog brush reveals where it passes and nothing else");
+    altDrag(QPointF(1400, 1000), QPointF(1600, 1000));
+    check(fogAt(m, QPointF(1500, 1000)) == 255 && fogAt(m, QPointF(1800, 1000)) == 0, "Alt + drag covers again");
+    pause(500);
+    m->update();
+    fogOpaque = true;
+    const QString fogFile = dir + "/fog.vaxmap";
+    w.saveTo(fogFile);
+    fogOpaque = false;
+    w.openProject(fogFile);
+    m = maps().value(0);
+    check(m && fogOpaque && fogAt(m, QPointF(1800, 1000)) == 0 && fogAt(m, QPointF(1500, 1000)) == 255,
+          "the fog and the opaque setting are saved with the project");
+    if (!m) return;
+    c->setTool(Canvas::Fog);
+    drag(c, QPointF(1000, 500), QPointF(2000, 500));
+    pause(500);
+    w.undo();
+    m = maps().value(0);
+    check(m && fogAt(m, QPointF(1500, 500)) == 255, "undo covers again what the fog brush revealed");
+    c->setTool(Canvas::Select);
+    MapItem *m2 = w.importMap(map2, QPointF(-2000, 0));
+    waitFor([&] { return m2->src->ready; }, 60000);
+    c->centerOn(m2->sceneBoundingRect().center());
+    c->setTool(Canvas::Fog);
+    altDrag(m2->sceneBoundingRect().center() - QPointF(100, 0), m2->sceneBoundingRect().center() + QPointF(100, 0));
+    check(!m2->fog.isNull() && fogAt(m2, m2->boundingRect().center()) == 255 && fogAt(m2, QPointF(10, 10)) == 0,
+          "Alt + drag on a map without fog covers only where it passes");
+    c->setTool(Canvas::Select);
+    fogOpaque = false;
+
+    // cell size typed in
+    w.scene->clearSelection();
+    m2->setSelected(true);
+    c->setTool(Canvas::Calibrate);
+    c->calibrator->useCell(64);
+    key(c, Qt::Key_Right);
+    key(c, Qt::Key_Return);
+    check(std::abs(m2->cal.cellSize() - 64) < 1e-9 && m2->cal.origin == QPointF(1, 0), "a typed cell size makes the grid; the arrows move it before it is applied");
+
+    // the fit to the map's lines runs on a worker thread
+    m2->cal = Calibration();
+    w.scene->clearSelection();
+    m2->setSelected(true);
+    c->setTool(Canvas::Calibrate);
+    waitFor([&] { return !c->calibrator->busy(); }, 30000);   // the map's lines are read
+    QElapsedTimer t;
+    t.start();
+    click(c, m2->mapToScene(QPointF(64 * 3, 64 * 3)));
+    click(c, m2->mapToScene(QPointF(64 * 4, 64 * 3)));
+    const qint64 clickMs = t.elapsed();
+    const bool wasBusy = c->calibrator->busy();
+    waitFor([&] { return !c->calibrator->busy(); }, 30000);
+    check(wasBusy && clickMs < 100 && c->calibrator->confirmed(), QString("a measurement returns at once (%1 ms) and the fit to the lines follows").arg(clickMs));
+    c->setTool(Canvas::Select);
+
+    // full size export: the map's own pixels, also where the tiles were not loaded yet
+    m->setFog(QImage());   // the export shows the fog as the canvas does
+    c->clearRulers();
+    const QString big = dir + "/full.png";
+    const QSize size = w.exportFull(big, m->sceneBoundingRect());
+    const QImage out(big), src(map1);
+    bool same = size == QSize(3000, 2000) && out.size() == size;
+    for (QPoint p : {QPoint(5, 1990), QPoint(1234, 777), QPoint(2990, 1990), QPoint(2500, 100)}) {
+        const QColor a = out.pixelColor(p), b = src.pixelColor(p);
+        same = same && std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) + std::abs(a.blue() - b.blue()) < 12;
+    }
+    QString diff;
+    for (QPoint p : {QPoint(5, 1990), QPoint(1234, 777), QPoint(2990, 1990), QPoint(2500, 100)})
+        diff += QString(" %1,%2: %3/%4").arg(p.x()).arg(p.y()).arg(out.pixelColor(p).name(), src.pixelColor(p).name());
+    check(same, QString("Export full size writes the map at its own resolution, with its pixels (%1x%2%3)").arg(size.width()).arg(size.height()).arg(diff));
+
+    // package
+    const QString zip = dir + "/campaign.zip";
+    w.saveTo(dir + "/campaign.vaxmap");
+    check(w.savePackage(zip), "Save package writes a .zip");
+    QDir(dir + "/campaign").removeRecursively();
+    w.newProject();
+    const bool opened = w.openPackage(zip);
+    QStringList found;
+    for (MapItem *x : maps()) found << (x->src->error.isEmpty() && x->src->path.startsWith(QFileInfo(dir + "/campaign").absoluteFilePath()) ? "ok" : x->src->path);
+    bool fogKept = false;
+    for (MapItem *x : maps()) fogKept = fogKept || !x->fog.isNull();
+    check(opened && found == QStringList({"ok", "ok"}) && fogKept,
+          "a package opens from a new folder beside it, with its images and fog: " + found.join(", "));
+    {   // a package whose names point outside its folder
+        QFile f(dir + "/evil.zip");
+        f.open(QIODevice::WriteOnly);
+        QZipWriter zw(&f);
+        zw.addFile("evil.vaxmap", QByteArray(R"({"format":"vaxmaps","version":3,"layers":[]})"));
+        zw.addFile("../escaped.txt", QByteArray("x"));
+        zw.addFile("images/../../escaped2.txt", QByteArray("x"));
+        zw.close();
+    }
+    w.openPackage(dir + "/evil.zip");
+    check(!QFile::exists(dir + "/escaped.txt") && !QFile::exists(QFileInfo(dir).absolutePath() + "/escaped2.txt") && !QFile::exists(dir + "/escaped2.txt"),
+          "a package cannot write outside its own folder");
+
+    // session
+    c->color = QColor(10, 200, 30);
+    c->setTool(Canvas::Pen);
+    w.saveSession();
+    {
+        MainWindow other;
+        other.restoreSession();
+        check(other.canvas->color == QColor(10, 200, 30) && other.canvas->tool() == Canvas::Pen && other.canvas->penWidth == c->penWidth,
+              "the next window starts with the tool, colour and width of the last one");
+        other.dirty = false;
+    }
+    c->setTool(Canvas::Select);
+
+    // minimap and shortcuts
+    w.newProject();
+    c->activeLayer = w.layers[0];
+    w.importMap(map1, QPointF(0, 0));
+    pause(1300);
+    QWidget *mini = nullptr;
+    for (QWidget *x : c->findChildren<QWidget *>(Qt::FindDirectChildrenOnly))
+        if (x->width() == 220 && x->height() == 150) mini = x;
+    if (mini) {
+        c->centerOn(5000, 5000);
+        const QPoint centre = mini->rect().center();
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(centre), mini->mapToGlobal(QPointF(centre)), Qt::LeftButton, Qt::LeftButton, {});
+        QApplication::sendEvent(mini, &press);
+    }
+    check(mini && mini->isVisible() && QLineF(c->mapToScene(c->viewport()->rect().center()), QPointF(0, 0)).length() < 40,
+          "the minimap shows the project and a click on it moves the view there");
+    key(c, Qt::Key_Escape);
+    w.showShortcuts();
+    check(w.props->isShown() && w.props->width() == 720, "F1 shows the list of shortcuts");
+    key(c, Qt::Key_Escape);
+
+    // every new text in Portuguese
+    w.setLanguage(true);
+    c->setTool(Canvas::Token);
+    c->setTool(Canvas::Fog);
+    c->setTool(Canvas::Select);
+    w.showShortcuts();
+    w.grab();
+    m = maps().value(0);
+    if (m) {
+        m->cal = Calibration::square(100, QPointF(50, 50));
+        w.scene->clearSelection();
+        m->setSelected(true);
+        w.openProperties(m, QPoint(60, 60));
+        w.grab();
+    }
+    auto *tok = new TokenItem("Orc", Qt::red, 90, 1);
+    tok->setParentItem(w.layers[1]);
+    w.scene->clearSelection();
+    tok->setSelected(true);
+    w.openProperties(tok, QPoint(60, 60));
+    w.grab();
+    w.openMenu(QPoint(80, 80));
+    w.grab();
+    key(c, Qt::Key_Escape);
+    w.scene->clearSelection();
+    c->setTool(Canvas::Calibrate);
+    w.grab();
+    c->setTool(Canvas::Select);
+    check(untranslated().isEmpty(), "Portuguese: the texts added in 0.6 are in the table" + (untranslated().isEmpty() ? QString() : ": " + untranslated().join(" | ")));
+    w.setLanguage(false);
+    w.dirty = false;
+}
+
 void bench(MainWindow &w, const QString &dir) {
     say("\n== benchmark: 8 maps of 6000 x 4000 px ==");
     QStringList paths;
@@ -1185,6 +1437,7 @@ int runSelfTest(const QStringList &args) {
 
     regressions(w, tmp.path(), map2);
     additions(w, tmp.path(), map2);
+    version06(w, tmp.path(), map1, map2);
     if (args.contains("--bench")) bench(w, tmp.path());
     w.dirty = false;
     say(failures ? QString("\n%1 failure(s)").arg(failures) : "\nAll tests passed.");

@@ -9,6 +9,7 @@ class LayerItem;
 class LinkItem;
 class MapItem;
 class StrokeItem;
+class TokenItem;
 class ZoneItem;
 
 extern bool snapEnabled;
@@ -21,7 +22,7 @@ QPointF snapPoint(QGraphicsScene *s, QPointF scenePos, bool centre = false);
 struct Span {
     bool ok = false;   // false: no calibrated map there
     bool hex = false;
-    int steps = 0;
+    double steps = 0;   // cells; not whole with the straight-line diagonal rule
     double distance = 0;
     QString unit;
 };
@@ -29,12 +30,15 @@ Span measureSpan(QGraphicsScene *s, QPointF a, QPointF b);
 QString spanText(const Span &s);                  // "4 squares · 6 m"
 QString totalText(const QVector<Span> &spans);    // sums segments, grouped by grid kind and unit
 QString measureText(QGraphicsScene *s, QPointF a, QPointF b);
+// Puts a token on the grid of the calibrated map under it: on a cell centre, or on a corner when it is an even
+// number of squares wide. Sizes it to its cells there.
+void snapToken(TokenItem *t);
 
 class Canvas : public QGraphicsView {
     Q_OBJECT
 public:
     // Order matches the menu.
-    enum Tool { Select, Pan, Pen, Eraser, Text, Note, Measure, Calibrate, ZoneRect, ZoneEllipse, ZonePoly, Link };
+    enum Tool { Select, Pan, Pen, Eraser, Text, Note, Measure, Calibrate, ZoneRect, ZoneEllipse, ZonePoly, Link, Token, Fog };
     explicit Canvas(QGraphicsScene *scene, QWidget *parent = nullptr);
     void setTool(Tool t);
     Tool tool() const { return currentTool; }
@@ -93,6 +97,8 @@ private:
     LinkItem *linkAt(QPoint viewPos) const;
     LinkItem *unpairedLink(const LinkItem *except = nullptr) const;
     void eraseAt(QPointF sp);
+    void fogTo(QPointF sp);
+    double fogWidth() const { return penWidth * 10 / zoom(); }   // scene units
     void updateRuler(Ruler &r);
     void deleteRuler(int i);
     void finishPoly();
@@ -100,7 +106,9 @@ private:
     void updateCursor();
 
     Tool currentTool = Select;
-    bool panning = false, spaceDown = false, erasing = false, erasedAny = false;
+    bool panning = false, spaceDown = false, erasing = false, erasedAny = false, fogging = false, fogCover = false;
+    QPointF fogLast;
+    QList<MapItem *> fogTouched;
     QPoint lastPan, pressedLinkAt;
     StrokeItem *stroke = nullptr;
     ZoneItem *draft = nullptr;

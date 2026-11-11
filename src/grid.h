@@ -11,7 +11,11 @@ class QColor;
 
 struct Calibration {
     enum Grid { Square, HexPointy, HexFlat };
+    // Squares only: what a diagonal step costs. One: 1 (D&D 5e). Alternating: 1, 2, 1, 2... (5/10/5 ft).
+    // Straight: the straight-line distance between the cell centres.
+    enum Diagonal { One, Alternating, Straight };
     Grid grid = Square;
+    Diagonal diagonal = One;
     QPointF origin;   // square: a corner where lines cross; hex: the centre of a hex. Image px.
     QPointF a, b;     // one lattice step along each axis, image px. Square: (c, 0) and (0, c); hex: to two neighbours 60° apart.
     double unitsPerCell = 1.5;
@@ -36,7 +40,7 @@ struct Calibration {
     QPoint cellAt(QPointF p) const;        // the square or hex containing p
     QPointF cellCentre(QPoint c) const;
     QPointF nearestCorner(QPointF p) const;   // square corner or hex vertex
-    int steps(QPoint from, QPoint to) const;  // squares: a diagonal counts 1 (D&D 5e); hexes: hex distance
+    double steps(QPoint from, QPoint to) const;   // in cells: squares by the diagonal rule, hexes by hex distance
     QString noun(int count) const;
 };
 

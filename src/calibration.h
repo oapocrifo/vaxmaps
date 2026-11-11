@@ -65,13 +65,15 @@ public:
     const std::optional<Calibration> &current() const { return result; }
     bool confirmed() const { return matched; }
     int measured() const { return int(measurements.size()); }
-    bool busy() const { return waitingAnalysis || detecting; }
+    bool busy() const { return waitingAnalysis || detecting || fitting; }
+    void useCell(double size);   // a grid of this cell size, typed instead of measured
 
 private:
     void choose(MapItem *m);
     void reset();
     void measureAgain();
     void evaluate();
+    void fitted(const std::optional<GridFit> &fit, const Calibration &measuredGrid);
     void showStep();
     void setResult(const Calibration &c, bool fromLines, const QString &how);
     void requestAnalysis();
@@ -88,11 +90,12 @@ private:
     std::optional<QPointF> pointA;
     std::optional<Calibration> result;
     QString how;
-    bool hex = false, matched = false, waitingAnalysis = false, detecting = false;
+    bool hex = false, matched = false, waitingAnalysis = false, detecting = false, fitting = false;
+    int fitGeneration = 0;   // a fit that comes back after the measurements changed is dropped
     QList<QGraphicsItem *> marks;   // children of the map: deleted with it
 
     QLabel *title, *instruction, *progress, *unitsLabel;
     MenuButton *squaresButton, *hexButton, *detectButton, *applyButton, *againButton;
-    QDoubleSpinBox *perCell;
+    QDoubleSpinBox *perCell, *cellSpin;
     QLineEdit *unit;
 };

@@ -548,6 +548,20 @@ Calibrator::Calibrator(Canvas *c) : Panel(c, false), canvas(c) {
     v->addLayout(types);
     detectButton = new MenuButton("Detect the grid automatically", "F");
     v->addWidget(detectButton);
+    auto *typed = new QHBoxLayout;
+    typed->setSpacing(3);
+    typed->addWidget(new Label("Or type the cell size:"));
+    cellSpin = new QDoubleSpinBox;
+    cellSpin->setRange(2, 100000);
+    cellSpin->setDecimals(2);
+    cellSpin->setValue(70);
+    cellSpin->setSuffix(" px");
+    cellSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    typed->addWidget(cellSpin);
+    auto *use = new MenuButton("Use");
+    typed->addWidget(use);
+    v->addLayout(typed);
+    connect(use, &QAbstractButton::clicked, this, [this] { useCell(cellSpin->value()); });
     instruction = new QLabel;
     instruction->setWordWrap(true);
     instruction->setMinimumHeight(58);
@@ -615,7 +629,8 @@ void Calibrator::stop() {
     measurements.clear();
     pointA.reset();
     result.reset();
-    matched = waitingAnalysis = detecting = false;
+    matched = waitingAnalysis = detecting = fitting = false;
+    ++fitGeneration;
     applyButton->setChecked(false);
     dismiss();
 }
@@ -646,7 +661,8 @@ void Calibrator::reset() {
     measurements.clear();
     pointA.reset();
     result.reset();
-    matched = detecting = false;
+    matched = detecting = fitting = false;
+    ++fitGeneration;
     if (map) { map->preview.reset(); map->update(); }
     applyButton->setEnabled(false);
     applyButton->setChecked(false);
@@ -770,7 +786,26 @@ void Calibrator::evaluate() {
         return;
     }
     waitingAnalysis = false;
-    std::optional<GridFit> fit = fitGrid(*a, measuredGrid.grid, measuredGrid.cellSize());
+    // The fit takes 0.5 to 1 s on a big map: it runs on a worker thread, the measured grid shows meanwhile.
+    fitting = true;
+    const int gen = ++fitGeneration;
+    if (!result) {
+        map->preview = measuredGrid;
+        map->update();
+    }
+    QPointer<Calibrator> self(this);
+    const QString path = map->src->path;
+    QThreadPool::globalInstance()->start([self, a, measuredGrid, gen, path] {
+        const std::optional<GridFit> fit = fitGrid(*a, measuredGrid.grid, measuredGrid.cellSize());
+        QMetaObject::invokeMethod(qApp, [self, fit, measuredGrid, gen, path] {
+            if (!self || gen != self->fitGeneration || !self->map || self->map->src->path != path) return;
+            self->fitting = false;
+            self->fitted(fit, measuredGrid);
+        }, Qt::QueuedConnection);
+    });
+}
+
+void Calibrator::fitted(const std::optional<GridFit> &fit, const Calibration &measuredGrid) {
     bool onClicks = fit.has_value();
     if (fit)
         for (const Measurement &m : measurements)
@@ -788,6 +823,17 @@ void Calibrator::evaluate() {
         applyButton->setEnabled(true);   // the measurement alone can still be applied
         showStep();
     }
+}
+
+void Calibrator::useCell(double size) {
+    if (!map) return setText(T("Click the map you want to calibrate."));
+    ++fitGeneration;
+    fitting = false;
+    measurements.clear();
+    pointA.reset();
+    setResult(hex ? Calibration::hex(Calibration::HexPointy, size, QPointF(size / 2, size / 2)) : Calibration::square(size, QPointF(0, 0)),
+              false, T("typed in"));
+    canvas->setFocus();   // the arrows move it now
 }
 
 void Calibrator::setResult(const Calibration &c, bool fromLines, const QString &text) {
@@ -847,6 +893,7 @@ void Calibrator::apply() {
     c.unitsPerCell = perCell->value();
     c.unit = unit->text().trimmed().isEmpty() ? "m" : unit->text().trimmed();
     c.showGrid = map->cal.showGrid;   // the grid stays as the user had it: hidden unless they turned it on
+    c.diagonal = map->cal.diagonal;
     map->cal = c;
     map->preview.reset();
     map->update();

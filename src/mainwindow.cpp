@@ -24,7 +24,12 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMouseEvent>
+#include <QPainter>
 #include <QPlainTextEdit>
+#include <QScrollBar>
+#include <QtGui/private/qzipreader_p.h>
+#include <QtGui/private/qzipwriter_p.h>
 #include <QPointer>
 #include <QSaveFile>
 #include <QSettings>
@@ -88,6 +93,26 @@ template <class Fn> void eachMap(const QList<LayerItem *> &layers, Fn fn) {
 
 bool imageMissing(const MapItem *m) { return !QFileInfo(m->src->path).isFile(); }
 
+// What Find looks in: names of zones, links and tokens, descriptions of zones, the text of texts and notes.
+QString searchText(QGraphicsItem *c) {
+    if (c->type() == ZoneItem::Type || c->type() == LinkItem::Type) {
+        auto *z = static_cast<ZoneItem *>(c);
+        return z->name + '\n' + z->desc;
+    }
+    if (auto *k = qgraphicsitem_cast<TokenItem *>(c)) return k->name;
+    if (auto *t = qgraphicsitem_cast<TextItem *>(c)) return t->toPlainText();
+    return {};
+}
+
+QString searchLabel(QGraphicsItem *c) {
+    QString s = searchText(c).trimmed();
+    if (c->type() == ZoneItem::Type || c->type() == LinkItem::Type) {
+        const QString name = static_cast<ZoneItem *>(c)->name.trimmed();
+        if (!name.isEmpty()) s = name;
+    }
+    return s.section('\n', 0, 0).simplified();   // first line
+}
+
 void addRecent(const QString &f) {
     QSettings settings;
     QStringList recent = settings.value("recent").toStringList();
@@ -100,6 +125,89 @@ QByteArray clipboardItems() {
     const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
     return mime ? mime->data(clipboardFormat) : QByteArray();
 }
+
+// The whole project, small, in a corner, with the visible area outlined. A click or a drag moves the view there.
+class Minimap : public QWidget {
+public:
+    Minimap(Canvas *c, std::function<QRectF()> content) : QWidget(c), canvas(c), content(std::move(content)) {
+        setFixedSize(220, 150);
+        setCursor(Qt::PointingHandCursor);
+        setProperty("wanted", true);
+        connect(c->scene(), &QGraphicsScene::changed, this, [this] { stale = true; });
+        for (QScrollBar *b : {c->horizontalScrollBar(), c->verticalScrollBar()})
+            connect(b, &QScrollBar::valueChanged, this, qOverload<>(&QWidget::update));
+        connect(c, &Canvas::zoomChanged, this, qOverload<>(&QWidget::update));
+        timer.setInterval(1000);   // redrawn at most once a second: a map being dragged changes the scene 60 times a second
+        connect(&timer, &QTimer::timeout, this, [this] {
+            if (!stale) return;
+            if (isVisible()) render();
+            else { stale = false; area = this->content(); }   // hidden: only whether there is anything to show
+            if (areaChanged) areaChanged();
+        });
+        timer.start();
+    }
+    QRectF area;   // scene rect shown
+    std::function<void()> areaChanged;
+    void render() {
+        stale = false;
+        area = content();
+        image = QImage();
+        if (!area.isEmpty()) {
+            const QRectF r = target();
+            image = QImage((r.size() * devicePixelRatioF()).toSize(), QImage::Format_ARGB32_Premultiplied);
+            image.setDevicePixelRatio(devicePixelRatioF());
+            image.fill(Qt::transparent);
+            QPainter p(&image);
+            p.setRenderHint(QPainter::SmoothPixmapTransform);
+            canvas->scene()->render(&p, QRectF(QPointF(), r.size()), area);
+        }
+        update();
+    }
+protected:
+    QRectF target() const {   // where `area` is drawn, keeping its proportions
+        const QRectF box = rect().adjusted(6, 6, -6, -6);
+        if (area.isEmpty()) return box;
+        QSizeF s = area.size();
+        s.scale(box.size(), Qt::KeepAspectRatio);
+        return QRectF(box.center() - QPointF(s.width(), s.height()) / 2, s);
+    }
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(QColor(255, 255, 255, 40));
+        p.setBrush(QColor(24, 25, 28, 225));
+        p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8);
+        if (image.isNull()) return;
+        const QRectF t = target();
+        p.drawImage(t.topLeft(), image);
+        const QRectF seen = canvas->mapToScene(canvas->viewport()->rect()).boundingRect();
+        const double k = t.width() / area.width();
+        QRectF box((seen.left() - area.left()) * k + t.left(), (seen.top() - area.top()) * k + t.top(), seen.width() * k, seen.height() * k);
+        p.setClipRect(rect().adjusted(2, 2, -2, -2));
+        p.setPen(QPen(QColor(255, 210, 60), 1.5));
+        p.setBrush(QColor(255, 210, 60, 30));
+        if (box.width() < 4) box.adjust(-2, 0, 2, 0);   // zoomed far in: still a visible mark
+        if (box.height() < 4) box.adjust(0, -2, 0, 2);
+        p.drawRect(box);
+    }
+    void mousePressEvent(QMouseEvent *e) override { moveTo(e->position()); }
+    void mouseMoveEvent(QMouseEvent *e) override { if (e->buttons() & Qt::LeftButton) moveTo(e->position()); }
+    void wheelEvent(QWheelEvent *e) override { e->accept(); }
+    void showEvent(QShowEvent *) override { render(); }
+private:
+    void moveTo(QPointF at) {
+        if (area.isEmpty()) return;
+        const QRectF t = target();
+        const double k = area.width() / t.width();
+        canvas->centerOn(area.topLeft() + (at - t.topLeft()) * k);
+        update();
+    }
+    Canvas *canvas;
+    std::function<QRectF()> content;
+    QImage image;
+    QTimer timer;
+    bool stale = true;
+};
 
 } // namespace
 
@@ -114,6 +222,14 @@ MainWindow::MainWindow() : recoveryLock(recoveryFile() + ".lock") {
 
     toast = new Toast(canvas, Toast::BottomCenter);
     zoomToast = new Toast(canvas, Toast::BottomRight);
+    minimap = new Minimap(canvas, [this] {
+        QRectF r;
+        for (LayerItem *l : layers)
+            if (l->isVisible() && !l->links) r |= l->childrenBoundingRect();
+        return r;
+    });
+    static_cast<Minimap *>(minimap)->areaChanged = [this] { placeOverlays(); };
+    minimap->hide();
     buildMenu();
     buildLayersPanel();
     props = new Panel(canvas);
@@ -133,7 +249,7 @@ MainWindow::MainWindow() : recoveryLock(recoveryFile() + ".lock") {
     // Queued: this may ask to save, and a dialog shown inside the drop freezes the window the files came from.
     connect(canvas, &Canvas::filesDropped, this, [this](const QStringList &files, QPointF pos) {
         for (const QString &f : files)
-            if (f.endsWith(".vaxmap", Qt::CaseInsensitive)) { if (maybeSave()) openFromUi(f); return; }
+            if (f.endsWith(".vaxmap", Qt::CaseInsensitive) || f.endsWith(".zip", Qt::CaseInsensitive)) { if (maybeSave()) openFromUi(f); return; }
         importMaps(files, pos);
     }, Qt::QueuedConnection);
     qApp->installEventFilter(this);   // closes popups on outside clicks and Esc, keeps overlays placed
@@ -184,22 +300,24 @@ void MainWindow::buildMenu() {
         {Canvas::Select, "Select", "V"}, {Canvas::Pan, "Pan", "H"}, {Canvas::Pen, "Pen", "P"},
         {Canvas::Eraser, "Eraser", "E"}, {Canvas::Text, "Text", "T"}, {Canvas::Note, "Note", "N"},
         {Canvas::Measure, "Ruler", "M"}, {Canvas::Calibrate, "Calibrate", "K"}, {Canvas::ZoneRect, "Rectangle", "R"},
-        {Canvas::ZoneEllipse, "Circle", "O"}, {Canvas::ZonePoly, "Vertices", "G"}, {Canvas::Link, "New link", "J"}};
+        {Canvas::ZoneEllipse, "Circle", "O"}, {Canvas::ZonePoly, "Vertices", "G"}, {Canvas::Link, "New link", "J"},
+        {Canvas::Token, "Token", "B"}, {Canvas::Fog, "Fog brush", "F"}};
     auto *group = new QButtonGroup(this);
-    QGridLayout *grid = nullptr;
+    QGridLayout *grid = nullptr, *toolsGrid = nullptr;
     for (int i = 0; i < int(std::size(tools)); ++i) {
         if (i == 0 || i == 8 || i == 11) {
             v->addWidget(ui::caption(i == 0 ? "Tools" : i == 8 ? "Zones" : "Links between maps"));
             grid = new QGridLayout;
             grid->setSpacing(3);
             v->addLayout(grid);
+            if (i == 0) toolsGrid = grid;
         }
         const ToolDef t = tools[i];
         auto *b = new MenuButton(t.name, t.key);
         b->setCheckable(true);
         group->addButton(b);
-        const int k = i < 8 ? i : i < 11 ? i - 8 : 0;
-        grid->addWidget(b, k / 3, k % 3);
+        const int k = i < 8 ? i : i < 11 ? i - 8 : i == 11 ? 0 : i - 4;   // Token and Fog brush go after Calibrate
+        (i >= 12 ? toolsGrid : grid)->addWidget(b, k / 3, k % 3);
         connect(b, &QAbstractButton::clicked, this, [this, t] { menu->dismiss(); canvas->setTool(t.tool); canvas->setFocus(); });
         toolButtons << b;
     }
@@ -209,6 +327,16 @@ void MainWindow::buildMenu() {
     // Queued: the signal can come from the layer list's own itemChanged, and rebuilding the list there frees the item Qt is using.
     connect(canvas, &Canvas::linksShown, this, [this](bool on) { linksButton->setChecked(on); refreshLayers(); }, Qt::QueuedConnection);
     grid->addWidget(linksButton, 0, 1, 1, 2);
+    fogButton = new MenuButton("Opaque fog");
+    fogButton->setCheckable(true);
+    fogButton->setTip("On: the fog hides the map, as the players would see it. Off: it only darkens the map.");
+    connect(fogButton, &QAbstractButton::toggled, this, [this](bool on) {
+        if (fogOpaque == on) return;
+        fogOpaque = on;
+        scene->update();
+        setDirty(true);   // saved with the project
+    });
+    toolsGrid->addWidget(fogButton, 3, 1, 1, 2);
     connect(canvas, &Canvas::toolChanged, this, [this](int t) { toolButtons[t]->setChecked(true); });
 
     v->addWidget(ui::caption("Colour and width"));
@@ -251,6 +379,12 @@ void MainWindow::buildMenu() {
                         emit canvas->zoomChanged(1);
                     })), 1, 1);
     grid->addWidget(menuButton(action("Find…", QKeySequence("Ctrl+F"), [this] { showFind(); })), 1, 2);
+    minimapButton = new MenuButton("Minimap");
+    minimapButton->setCheckable(true);
+    minimapButton->setChecked(true);
+    connect(minimapButton, &QAbstractButton::toggled, this, [this](bool on) { minimap->setProperty("wanted", on); placeOverlays(); });
+    grid->addWidget(minimapButton, 2, 0);
+    grid->addWidget(menuButton(action("Shortcuts", QKeySequence(Qt::Key_F1), [this] { showShortcuts(); })), 2, 1);
     action("Zoom in", QKeySequence::ZoomIn, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(1.25); });
     action("Zoom out", QKeySequence::ZoomOut, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(0.8); });
     v->addLayout(grid);
@@ -263,22 +397,27 @@ void MainWindow::buildMenu() {
         connect(b, &QAbstractButton::clicked, this, [this, fn] { menu->dismiss(); fn(); });
         return b;
     };
-    // six columns: rows of three buttons span two each, rows of two span three
-    for (int i = 0; i < 6; ++i) grid->setColumnStretch(i, 1);
-    grid->addWidget(menuButton(action("New", QKeySequence::New, [this] { if (maybeSave()) newProject(); })), 0, 0, 1, 2);
-    grid->addWidget(menuButton(action("Open…", QKeySequence::Open, [this] { open(); })), 0, 2, 1, 2);
-    grid->addWidget(plain("Open recent…", [this] { showRecent(); }), 0, 4, 1, 2);
-    grid->addWidget(menuButton(action("Save", QKeySequence::Save, [this] { save(); })), 1, 0, 1, 3);
-    grid->addWidget(menuButton(action("Save as…", QKeySequence("Ctrl+Shift+S"), [this] { saveAs(); })), 1, 3, 1, 3);
-    grid->addWidget(menuButton(action("Import maps…", QKeySequence("Ctrl+I"), [this] { importDialog(); })), 2, 0, 1, 3);
-    grid->addWidget(menuButton(action("Export view…", QKeySequence("Ctrl+E"), [this] { exportDialog(); })), 2, 3, 1, 3);
+    // two columns: with their shortcuts, three Portuguese names do not fit in a row
+    grid->addWidget(menuButton(action("New", QKeySequence::New, [this] { if (maybeSave()) newProject(); })), 0, 0);
+    grid->addWidget(menuButton(action("Open…", QKeySequence::Open, [this] { open(); })), 0, 1);
+    grid->addWidget(menuButton(action("Save", QKeySequence::Save, [this] { save(); })), 1, 0);
+    grid->addWidget(menuButton(action("Save as…", QKeySequence("Ctrl+Shift+S"), [this] { saveAs(); })), 1, 1);
+    grid->addWidget(plain("Open recent…", [this] { showRecent(); }), 2, 0);
+    MenuButton *package = plain("Save package…", [this] { packageDialog(); });
+    package->setTip("The project and all its images in one .zip file, to take to another computer");
+    grid->addWidget(package, 2, 1);
+    grid->addWidget(menuButton(action("Import maps…", QKeySequence("Ctrl+I"), [this] { importDialog(); })), 3, 0);
+    grid->addWidget(menuButton(action("Export view…", QKeySequence("Ctrl+E"), [this] { exportDialog(); })), 3, 1);
+    MenuButton *full = plain("Export full size…", [this] { exportFullDialog(); });
+    full->setTip("The selection, or the visible area, at the maps' own resolution");
+    grid->addWidget(full, 4, 0);
     MenuButton *clear = plain("Clear cache", [this] { clearCache(); });
     clear->setTip("Deletes the prepared copies of the maps not opened since the program started");
-    grid->addWidget(clear, 3, 0, 1, 2);
+    grid->addWidget(clear, 4, 1);
     languageButton = plain(portuguese() ? "English" : "Português", [this] { setLanguage(!portuguese()); });
     languageButton->literal = true;   // each language's own name
-    grid->addWidget(languageButton, 3, 2, 1, 2);
-    grid->addWidget(menuButton(action("Quit", QKeySequence("Ctrl+Q"), [this] { close(); })), 3, 4, 1, 2);
+    grid->addWidget(languageButton, 5, 0);
+    grid->addWidget(menuButton(action("Quit", QKeySequence("Ctrl+Q"), [this] { close(); })), 5, 1);
     v->addLayout(grid);
 
     v->addWidget(ui::caption("Edit"));
@@ -321,6 +460,7 @@ void MainWindow::openMenu(QPoint at) {
 QVBoxLayout *MainWindow::newPopup() {
     menu->dismiss();
     props->hide();   // still fading out from a moment ago: content put in a visible panel was not measured, the popup came out empty
+    props->setFixedWidth(330);   // the shortcuts list widens it
     delete propsContent;
     propsContent = new QWidget;
     auto *v = new QVBoxLayout(propsContent);
@@ -443,6 +583,38 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         auto *calibrate = new MenuButton("Calibrate the grid", "K");
         connect(calibrate, &QAbstractButton::clicked, this, [this] { props->dismiss(); canvas->setTool(Canvas::Calibrate); });
         v->addWidget(calibrate);
+        if (cal.valid() && !cal.isHex()) {
+            v->addWidget(ui::caption("Diagonals"));
+            auto *rules = new QHBoxLayout;
+            rules->setSpacing(3);
+            auto *group = new QButtonGroup(propsContent);
+            const char *names[] = {"Count 1", "1-2-1", "Straight line"};
+            const char *tips[] = {"Each diagonal step counts 1 square (D&D 5e)", "Diagonal steps count 1, 2, 1, 2... (5, 10, 5 ft)",
+                                  "The straight-line distance between the squares"};
+            for (int i = 0; i < 3; ++i) {
+                auto *b = new MenuButton(names[i]);
+                b->setTip(tips[i]);
+                b->setCheckable(true);
+                b->setChecked(cal.diagonal == i);
+                group->addButton(b);
+                connect(b, &QAbstractButton::clicked, this, [edit, i] { edit([i](Calibration &c) { c.diagonal = Calibration::Diagonal(i); }); });
+                rules->addWidget(b);
+            }
+            v->addLayout(rules);
+        }
+        v->addWidget(ui::caption("Fog of war"));
+        auto *fog = new MenuButton("Cover the map with fog");
+        fog->setCheckable(true);
+        fog->setChecked(!m->fog.isNull());
+        fog->setEnabled(m->src->ready);
+        fog->setTip("Then reveal parts of it with the fog brush (F). Off removes the fog.");
+        connect(fog, &QAbstractButton::toggled, this, [this, m](bool on) {
+            if (on) m->enableFog(true);
+            else m->setFog(QImage());
+            m->update();
+            setDirty(true);
+        });
+        v->addWidget(fog);
         v->addSpacing(4);
         copyRow();
         v->addWidget(deleteButton("Remove map"));
@@ -468,6 +640,39 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         v->addWidget(go);
         v->addSpacing(4);
         v->addWidget(deleteButton("Delete link (both ends)"));
+    } else if (auto *k = qgraphicsitem_cast<TokenItem *>(it)) {
+        title(T("Token"));
+        v->addWidget(ui::caption("Name"));
+        auto *name = new QLineEdit(k->name);
+        connect(name, &QLineEdit::textChanged, this, [this, k](const QString &n) { k->name = n; k->update(); setDirty(true); });
+        v->addWidget(name);
+        colorRow(k->color, [k](const QColor &c) { k->color = c; k->update(); });
+        v->addWidget(ui::caption("Size in squares"));
+        auto *sizes = new QHBoxLayout;
+        sizes->setSpacing(3);
+        auto *group = new QButtonGroup(propsContent);
+        for (int cells = 1; cells <= 4; ++cells) {
+            auto *b = new MenuButton(QString("%1×%1").arg(cells));
+            b->literal = true;
+            b->setCheckable(true);
+            b->setChecked(k->cells == cells);
+            group->addButton(b);
+            connect(b, &QAbstractButton::clicked, this, [this, k, cells] {
+                k->setDiameter(k->diameter * cells / k->cells);   // where no map is calibrated; snapToken sizes it to the grid
+                k->cells = cells;
+                snapToken(k);
+                setDirty(true);
+            });
+            sizes->addWidget(b);
+        }
+        v->addLayout(sizes);
+        v->addSpacing(4);
+        copyRow();
+        v->addWidget(deleteButton("Delete token"));
+        props->popUp(at + QPoint(2, 2));
+        name->setFocus();
+        name->selectAll();
+        return;
     } else if (t) {
         title(T(t->note ? "Note" : "Text"));
         colorRow(t->color, [t](const QColor &c) { t->setColor(c); });
@@ -600,6 +805,11 @@ void MainWindow::toggleFullScreen() {
 
 void MainWindow::placeOverlays() {
     if (layersPanel->isShown()) layersPanel->move(canvas->width() - layersPanel->width() - 4, 4);
+    auto *mm = static_cast<Minimap *>(minimap);
+    const bool show = minimap->property("wanted").toBool() && !mm->area.isEmpty() && canvas->height() > 400;
+    minimap->move(8, canvas->height() - minimap->height() - 8);
+    if (show != minimap->isVisible()) minimap->setVisible(show);
+    if (show) minimap->raise();
     toast->place();
     zoomToast->place();
 }
@@ -738,6 +948,8 @@ void MainWindow::newProject() {
     qDeleteAll(layers);
     layers.clear();
     for (const char *name : {"Maps", "Zones", "Drawings", "Text"}) addLayer(T(name));
+    fogOpaque = false;
+    fogButton->setChecked(false);
     canvas->linksLayer = addLayer(T("Links"), true);
     canvas->showLinks(false);
     canvas->activeLayer = layers.first();
@@ -786,6 +998,8 @@ bool MainWindow::openProject(const QString &f) {
     canvas->scale(z, z);
     canvas->centerOn(v["cx"].toDouble(), v["cy"].toDouble());
     emit canvas->zoomChanged(z);
+    fogOpaque = v["fogOpaque"].toBool();
+    fogButton->setChecked(fogOpaque);
     // The recovery copy opens as the project it came from, with its changes still unsaved.
     // Only that copy may name another file: any other project could point Save at a file of its choice.
     const bool recovered = QFileInfo(f) == QFileInfo(recoveryFile());
@@ -798,6 +1012,7 @@ bool MainWindow::openProject(const QString &f) {
 }
 
 bool MainWindow::openFromUi(const QString &f) {
+    if (f.endsWith(".zip", Qt::CaseInsensitive)) return openPackage(f);
     if (!openProject(f)) return false;
     askMissingImages();
     return true;
@@ -845,7 +1060,7 @@ void MainWindow::askMissingImages() {
 QJsonObject MainWindow::toJson(const QDir &base) const {
     QJsonObject o = layersToJson(layers, base);
     const QPointF c = canvas->mapToScene(canvas->viewport()->rect().center());
-    o["view"] = QJsonObject{{"cx", c.x()}, {"cy", c.y()}, {"zoom", canvas->zoom()}};
+    o["view"] = QJsonObject{{"cx", c.x()}, {"cy", c.y()}, {"zoom", canvas->zoom()}, {"fogOpaque", fogOpaque}};
     return o;
 }
 
@@ -873,7 +1088,7 @@ bool MainWindow::saveAs() {
 
 void MainWindow::open() {
     if (!maybeSave()) return;
-    const QString f = QFileDialog::getOpenFileName(this, T("Open project"), QString(), T("Vax Maps project (*.vaxmap)"));
+    const QString f = QFileDialog::getOpenFileName(this, T("Open project"), QString(), T("Vax Maps project or package (*.vaxmap *.zip)"));
     if (!f.isEmpty()) openFromUi(f);
 }
 
@@ -888,6 +1103,7 @@ bool MainWindow::maybeSave() {
 void MainWindow::closeEvent(QCloseEvent *e) {
     if (!maybeSave()) return e->ignore();
     if (ownsRecovery) QFile::remove(recoveryFile());   // closed on purpose: nothing to recover
+    saveSession();
     e->accept();
 }
 
@@ -1051,8 +1267,7 @@ QList<QGraphicsItem *> MainWindow::findNamed(const QString &text) const {
     for (LayerItem *l : layers)
         if (l->isVisible())
             for (QGraphicsItem *c : l->childItems())
-                if ((c->type() == ZoneItem::Type || c->type() == LinkItem::Type) && static_cast<ZoneItem *>(c)->name.contains(part, Qt::CaseInsensitive))
-                    found << c;
+                if (searchText(c).contains(part, Qt::CaseInsensitive)) found << c;
     return found;
 }
 
@@ -1064,9 +1279,9 @@ void MainWindow::goTo(QGraphicsItem *it) {
 
 void MainWindow::showFind() {
     QVBoxLayout *v = newPopup();
-    v->addWidget(heading(new QLabel(T("Find a zone or link"))));
+    v->addWidget(heading(new QLabel(T("Find"))));
     auto *edit = new QLineEdit;
-    edit->setPlaceholderText(T("Part of its name"));
+    edit->setPlaceholderText(T("Name or text"));
     v->addWidget(edit);
     auto *results = new QVBoxLayout;
     results->setSpacing(2);
@@ -1078,12 +1293,12 @@ void MainWindow::showFind() {
         }
         const QList<QGraphicsItem *> found = findNamed(edit->text());
         for (QGraphicsItem *it : found.mid(0, 8)) {
-            auto *b = new MenuButton(static_cast<ZoneItem *>(it)->name, static_cast<LayerItem *>(it->parentItem())->name);
+            auto *b = new MenuButton(searchLabel(it), static_cast<LayerItem *>(it->parentItem())->name);
             b->literal = true;
             connect(b, &QAbstractButton::clicked, this, [this, it] { props->dismiss(); goTo(it); });
             results->addWidget(b);
         }
-        if (found.isEmpty() && !edit->text().trimmed().isEmpty()) results->addWidget(new QLabel(T("No zone or link with that name.")));
+        if (found.isEmpty() && !edit->text().trimmed().isEmpty()) results->addWidget(new QLabel(T("Nothing found.")));
         for (int i = 0; i < results->count(); ++i) results->itemAt(i)->widget()->show();   // Qt shows them only later, and unshown they are not measured
         props->adjustSize();
     });
@@ -1111,6 +1326,219 @@ void MainWindow::exportDialog() {
     if (QFileInfo(f).suffix().isEmpty()) f += ".png";
     if (exportView(f)) say(T("View exported to %1").arg(QFileInfo(f).fileName()));
     else QMessageBox::warning(this, "Vax Maps", T("Could not write the image %1").arg(f));
+}
+
+// ---- full size export, package, session, shortcuts ----
+
+void MainWindow::exportFullDialog() {
+    QRectF area;
+    for (QGraphicsItem *it : scene->selectedItems()) area |= it->sceneBoundingRect();
+    if (area.isEmpty()) area = canvas->mapToScene(canvas->viewport()->rect()).boundingRect();
+    bool preparing = false;
+    eachMap(layers, [&](MapItem *m) { preparing = preparing || (m->isVisible() && !m->src->ready && m->src->error.isEmpty() && m->sceneBoundingRect().intersects(area)); });
+    if (preparing) return say(T("Some maps there are still being prepared. Try again in a moment."));
+    const QFileInfo project(file);
+    QString f = QFileDialog::getSaveFileName(this, T("Export full size"), file.isEmpty() ? T("view.png") : project.dir().filePath(project.completeBaseName() + ".png"),
+                                             T("PNG image (*.png);;JPEG image (*.jpg)"));
+    if (f.isEmpty()) return;
+    if (QFileInfo(f).suffix().isEmpty()) f += ".png";
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const QSize size = exportFull(f, area);
+    QApplication::restoreOverrideCursor();
+    if (size.isEmpty()) QMessageBox::warning(this, "Vax Maps", T("Could not write the image %1").arg(f));
+    else say(T("Exported %1 (%2 x %3 px)").arg(QFileInfo(f).fileName()).arg(size.width()).arg(size.height()));
+}
+
+QSize MainWindow::exportFull(const QString &f, const QRectF &area) {
+    if (area.isEmpty()) return {};
+    // 1 image px per scene unit: maps are at their own size in the scene. At most 100 megapixels (400 MB in memory).
+    double k = std::min(1.0, std::sqrt(1e8 / (area.width() * area.height())));
+    k = std::min(k, 30000 / std::max(area.width(), area.height()));
+    const QSize size = (area.size() * k).toSize().expandedTo(QSize(1, 1));
+    QImage img(size, QImage::Format_RGB32);
+    if (img.isNull()) return {};
+    img.fill(canvas->backgroundBrush().color());
+    scene->clearSelection();   // no handles or dashed outlines
+    syncTiles = true;          // every tile at full detail before render() returns
+    {
+        QPainter p(&img);
+        p.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform | QPainter::TextAntialiasing);
+        scene->render(&p, QRectF(QPointF(), size), area);
+    }
+    syncTiles = false;
+    return img.save(f, nullptr, 92) ? size : QSize();
+}
+
+void MainWindow::packageDialog() {
+    const QFileInfo project(file);
+    QString f = QFileDialog::getSaveFileName(this, T("Save package"), file.isEmpty() ? T("map.zip") : project.dir().filePath(project.completeBaseName() + ".zip"),
+                                             T("Vax Maps package (*.zip)"));
+    if (f.isEmpty()) return;
+    if (!f.endsWith(".zip", Qt::CaseInsensitive)) f += ".zip";
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool ok = savePackage(f);
+    QApplication::restoreOverrideCursor();
+    if (ok) say(T("Package saved: %1").arg(QFileInfo(f).fileName()));
+}
+
+bool MainWindow::savePackage(const QString &zipFile) {
+    QHash<QString, QString> inside;   // image file -> its path in the package
+    QSet<QString> taken;
+    QStringList missing;
+    eachMap(layers, [&](MapItem *m) {
+        const QString path = m->src->path;
+        if (inside.contains(path)) return;
+        const QFileInfo fi(path);
+        if (!fi.isFile()) { missing << fi.fileName(); return; }
+        QString name = fi.fileName();
+        for (int n = 2; taken.contains(name.toLower()); ++n) name = QString("%1 (%2).%3").arg(fi.completeBaseName()).arg(n).arg(fi.suffix());
+        taken.insert(name.toLower());
+        inside.insert(path, "images/" + name);
+    });
+    QJsonObject o = toJson(QDir::root());
+    QJsonArray ls = o["layers"].toArray();
+    for (int i = 0; i < ls.size(); ++i) {   // the maps point at their copies, relative to the project
+        QJsonObject l = ls[i].toObject();
+        QJsonArray items = l["items"].toArray();
+        for (int j = 0; j < items.size(); ++j) {
+            QJsonObject it = items[j].toObject();
+            if (it["type"].toString() != "map") continue;
+            const QString abs = QDir::cleanPath(QDir::root().absoluteFilePath(it["path"].toString()));
+            if (inside.contains(abs)) it["path"] = inside.value(abs);
+            items[j] = it;
+        }
+        l["items"] = items;
+        ls[i] = l;
+    }
+    o["layers"] = ls;
+    // Written beside it and renamed at the end: a failure never leaves a broken package under the real name.
+    // Not QSaveFile: QZipWriter closes the device itself, which QSaveFile does not allow.
+    const QString part = zipFile + ".part";
+    QFile out(part);
+    bool ok = out.open(QIODevice::WriteOnly);
+    if (ok) {
+        QZipWriter zip(&out);
+        zip.setCompressionPolicy(QZipWriter::AlwaysCompress);
+        zip.addFile(QFileInfo(file.isEmpty() ? T("map.vaxmap") : file).completeBaseName() + ".vaxmap", QJsonDocument(o).toJson(QJsonDocument::Compact));
+        zip.setCompressionPolicy(QZipWriter::NeverCompress);   // images are compressed already
+        for (auto it = inside.cbegin(); ok && it != inside.cend(); ++it) {
+            QFile img(it.key());
+            ok = img.open(QIODevice::ReadOnly);
+            if (ok) zip.addFile(it.value(), &img);
+        }
+        zip.close();
+        ok = ok && zip.status() == QZipWriter::NoError && out.error() == QFileDevice::NoError;
+        if (ok && QFile::exists(zipFile)) ok = QFile::remove(zipFile);
+        ok = ok && QFile::rename(part, zipFile);
+    }
+    if (!ok) {
+        const QString why = out.errorString();
+        QFile::remove(part);
+        QMessageBox::warning(this, "Vax Maps", T("Could not save %1: %2").arg(zipFile, why));
+        return false;
+    }
+    if (!missing.isEmpty())
+        QMessageBox::warning(this, "Vax Maps", T("These images were not found and are not in the package: %1").arg(missing.join(", ")));
+    return true;
+}
+
+bool MainWindow::openPackage(const QString &zipFile) {
+    QZipReader zip(zipFile);
+    QString project;
+    const QList<QZipReader::FileInfo> entries = zip.isReadable() ? zip.fileInfoList() : QList<QZipReader::FileInfo>();
+    for (const QZipReader::FileInfo &e : entries)
+        if (e.isFile && !e.filePath.contains('/') && e.filePath.endsWith(".vaxmap", Qt::CaseInsensitive)) project = e.filePath;
+    if (project.isEmpty()) {
+        QMessageBox::warning(this, "Vax Maps", T("Not a Vax Maps package: %1").arg(zipFile));
+        return false;
+    }
+    // Extracted beside the .zip, into a new folder named after it.
+    const QFileInfo zi(zipFile);
+    QString dir = zi.absoluteDir().filePath(zi.completeBaseName());
+    for (int n = 2; QFileInfo::exists(dir); ++n) dir = zi.absoluteDir().filePath(QString("%1 (%2)").arg(zi.completeBaseName()).arg(n));
+    for (const QZipReader::FileInfo &e : entries) {
+        if (!e.isFile) continue;
+        // Names come from the file: none may lead outside the folder (../, absolute paths, drive letters).
+        const QString rel = QDir::cleanPath(QString(e.filePath).replace('\\', '/'));
+        if (rel.isEmpty() || rel.startsWith("..") || rel.startsWith('/') || rel.contains(':')) continue;
+        const QString target = dir + '/' + rel;
+        QDir().mkpath(QFileInfo(target).absolutePath());
+        QSaveFile out(target);
+        if (!out.open(QIODevice::WriteOnly) || out.write(zip.fileData(e.filePath)) < 0 || !out.commit()) {
+            QMessageBox::warning(this, "Vax Maps", T("Could not save %1: %2").arg(target, out.errorString()));
+            return false;
+        }
+    }
+    if (!openProject(dir + '/' + project)) return false;
+    say(T("Package extracted to %1").arg(QDir::toNativeSeparators(dir)));
+    askMissingImages();
+    return true;
+}
+
+void MainWindow::restoreSession() {
+    QSettings s;
+    s.beginGroup("session");
+    if (s.contains("geometry")) restoreGeometry(s.value("geometry").toByteArray());
+    const QColor c(s.value("color").toString());
+    if (c.isValid()) {
+        canvas->color = c;
+        menuSwatches->setCurrent(c);
+    }
+    widthSlider->setValue(s.value("width", 4).toInt());
+    minimapButton->setChecked(s.value("minimap", true).toBool());
+    const int tool = s.value("tool", Canvas::Select).toInt();
+    show();
+    if (tool >= Canvas::Select && tool <= Canvas::Fog && tool != Canvas::Calibrate && tool != Canvas::Link) canvas->setTool(Canvas::Tool(tool));
+    if (s.value("fullScreen").toBool()) toggleFullScreen();
+    if (s.value("layers").toBool()) toggleLayers();
+}
+
+void MainWindow::saveSession() {
+    const bool full = isFullScreen();
+    if (full) toggleFullScreen();   // the normal window is what geometry keeps
+    QSettings s;
+    s.beginGroup("session");
+    s.setValue("fullScreen", full);
+    s.setValue("geometry", saveGeometry());
+    s.setValue("layers", layersPanel->isShown());
+    s.setValue("minimap", minimapButton->isChecked());
+    s.setValue("tool", int(canvas->tool()));
+    s.setValue("color", canvas->color.name(QColor::HexArgb));
+    s.setValue("width", widthSlider->value());
+}
+
+void MainWindow::showShortcuts() {
+    static const char *const keys[][2] = {
+        {"V", "Select"}, {"H", "Pan"}, {"P", "Pen"}, {"E", "Eraser"}, {"T", "Text"}, {"N", "Note"}, {"M", "Ruler"},
+        {"K", "Calibrate"}, {"B", "Token"}, {"F", "Fog brush"}, {"Alt + drag", "Cover with the fog brush"}, {"R", "Rectangle"},
+        {"O", "Circle"}, {"G", "Vertices"}, {"J", "New link"}, {"Shift+J", "Show links"}, {"S", "Snap to grid"}, {"L", "Layers"},
+        {"F11", "Full screen"}, {"Ctrl+0", "Fit all"}, {"Ctrl+1", "Zoom 100%"}, {"Wheel", "Zoom at the pointer"},
+        {"Space + drag", "Pan (also the middle button)"}, {"Right click", "Menu, or the properties of the selected item"},
+        {"Double click", "Edit a text, add a vertex, jump through a shown link"}, {"Del", "Delete the selection"},
+        {"Arrows", "Move the selection 1 px (Shift: 10 px)"}, {"Esc", "Cancel, clear the rulers"}, {"Ctrl+Z / Ctrl+Y", "Undo / Redo"},
+        {"Ctrl+C / Ctrl+V", "Copy / Paste"}, {"Ctrl+D", "Duplicate"}, {"Ctrl+M", "Move to the active layer"}, {"Ctrl+F", "Find…"},
+        {"Ctrl+N / Ctrl+O", "New / Open…"}, {"Ctrl+S", "Save"}, {"Ctrl+I", "Import maps…"}, {"Ctrl+E", "Export view…"},
+        {"Ctrl+Q", "Quit"}};
+    QVBoxLayout *v = newPopup();
+    props->setFixedWidth(720);
+    v->addWidget(heading(new QLabel(T("Shortcuts"))));
+    auto *grid = new QGridLayout;
+    grid->setHorizontalSpacing(10);
+    grid->setVerticalSpacing(3);
+    const int rows = (int(std::size(keys)) + 1) / 2;
+    for (int i = 0; i < int(std::size(keys)); ++i) {
+        const QString k = keys[i][0];
+        static const QStringList words{"Alt + drag", "Wheel", "Space + drag", "Right click", "Double click", "Arrows"};
+        auto *key = new QLabel(words.contains(k) ? T(keys[i][0]) : k);   // key names stay as on the keyboard
+        key->setStyleSheet(QString("color: %1;").arg(ui::muted.name()));
+        auto *what = new QLabel(T(keys[i][1]));
+        grid->addWidget(key, i % rows, (i / rows) * 2, Qt::AlignTop);
+        grid->addWidget(what, i % rows, (i / rows) * 2 + 1, Qt::AlignTop);
+    }
+    grid->setColumnStretch(1, 1);
+    grid->setColumnStretch(3, 1);
+    v->addLayout(grid);
+    props->popUp(QPoint((canvas->width() - 720) / 2, 30));
 }
 
 void MainWindow::clearCache(std::function<void(qint64)> done) {
