@@ -141,6 +141,30 @@ QImage hexImage(int w, int h, const Calibration &c) {
     return img;
 }
 
+constexpr double SQRT3_TEST = 1.7320508075688772;
+
+// A printed hex map: each hex filled with a terrain colour, thick edges on top.
+QImage terrainHexImage(int w, int h, const Calibration &c, double pen = 3, int alpha = 255, int noise = 20) {
+    QImage img = gridImage(w, h, 1, {}, 0, noise);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QColor terrain[] = {{96, 140, 70}, {60, 100, 50}, {170, 150, 100}, {120, 110, 100}, {70, 110, 160}, {200, 190, 140}};
+    QPolygonF hexagon;
+    for (int k = 0; k < 6; ++k) {   // the hex's vertices, from the lattice: vertex = centre + (a + b) / 3 rotated in 60° steps
+        const double ang = (c.grid == Calibration::HexPointy ? 30 : 0) + 60 * k;
+        hexagon << QPointF(std::cos(ang * M_PI / 180), std::sin(ang * M_PI / 180)) * c.cellSize() / SQRT3_TEST;
+    }
+    p.setPen(QPen(QColor(40, 35, 30, alpha), pen));
+    for (int i = -60; i <= 60; ++i)
+        for (int j = -60; j <= 60; ++j) {
+            const QPointF q = c.origin + i * c.a + j * c.b;
+            if (q.x() < -c.cellSize() || q.y() < -c.cellSize() || q.x() > w + c.cellSize() || q.y() > h + c.cellSize()) continue;
+            p.setBrush(terrain[rnd() % 6]);
+            p.drawPolygon(hexagon.translated(q));
+        }
+    return img;
+}
+
 // Worst distance, in cells, between where the calibration puts lattice points and where they really are.
 double latticeError(const Calibration &c, const QVector<QPointF> &truth) {
     double worst = 0;
@@ -960,6 +984,82 @@ void version06(MainWindow &w, const QString &dir, const QString &map1, const QSt
     w.dirty = false;
 }
 
+void version07(MainWindow &w, const QString &dir, const QString &map1) {
+    say("\n== 0.7 ==");
+    Canvas *c = w.canvas;
+    w.newProject();
+    c->activeLayer = w.layers[0];
+    MapItem *m = w.importMap(map1, QPointF(1500, 1000));   // top-left at 0,0, 3000 x 2000
+    waitFor([&] { return m->src->ready; }, 60000);
+    m->cal = Calibration::square(100, QPointF(50, 50));   // 1 square = 1.5 m
+    m->enableFog(true);
+    auto fogAt = [&](QPointF p) {
+        const QImage &f = m->fog;
+        return qAlpha(f.pixel(int(p.x() * f.width() / m->boundingRect().width()), int(p.y() * f.height() / m->boundingRect().height())));
+    };
+    c->activeLayer = w.layers[1];
+    c->resetTransform();
+    c->centerOn(600, 600);
+    c->setTool(Canvas::Token);
+    click(c, QPointF(600, 600));   // lands on the centre of its square, (600, 600)
+    TokenItem *k = nullptr;
+    for (QGraphicsItem *it : w.layers[1]->childItems()) k = k ? k : qgraphicsitem_cast<TokenItem *>(it);
+    if (!k) { check(false, "token placed"); return; }
+    check(fogAt(QPointF(600, 600)) == 255, "a token without vision clears no fog");
+    k->sight = 4.5;   // 3 squares: 300 px
+    revealSight(k);
+    check(fogAt(QPointF(880, 600)) == 0 && fogAt(QPointF(600, 330)) == 0 && fogAt(QPointF(940, 600)) == 255 && fogAt(QPointF(830, 830)) == 255,
+          "a circle of vision clears the fog within its distance, in the map's units");
+    c->setTool(Canvas::Select);
+    drag(c, QPointF(600, 600), QPointF(1500, 1300));   // lands on (1500, 1300)
+    check(fogAt(QPointF(1500, 1050)) == 0 && fogAt(QPointF(600, 600)) == 0, "a dragged token clears the fog where it lands, the old area stays clear");
+    k->cone = true;
+    k->coneAngle = 90;
+    k->facing = 0;   // right
+    k->setPos(k->pos() + QPointF(800, 0));   // (2300, 1300)
+    revealSight(k);
+    check(fogAt(QPointF(2550, 1300)) == 0 && fogAt(QPointF(2050, 1300)) == 255 && fogAt(QPointF(2300, 1550)) == 255,
+          "a cone clears only the side it faces");
+    w.scene->clearSelection();
+    k->setSelected(true);
+    c->setFocus();
+    for (int i = 0; i < 6; ++i) key(c, Qt::Key_BracketRight, "]");   // 6 x 15° clockwise: down
+    check(std::abs(k->facing - 90) < 1e-9 && fogAt(QPointF(2300, 1550)) == 0 && fogAt(QPointF(2300, 1050)) == 255,
+          "] turns the selected cone clockwise and clears where it now faces");
+    auto *wall = new StrokeItem(Qt::black, 4);
+    wall->setParentItem(w.layers[1]);
+    wall->setPoints({QPointF(650, 1500), QPointF(650, 1900)});
+    wall->wall = true;
+    auto *guard = new TokenItem("G", Qt::blue, 90, 1);
+    guard->setParentItem(w.layers[1]);
+    guard->setPos(500, 1700);
+    guard->sight = 4.5;
+    revealSight(guard);
+    check(fogAt(QPointF(600, 1700)) == 0 && fogAt(QPointF(500, 1450)) == 0 && fogAt(QPointF(700, 1700)) == 255 && fogAt(QPointF(780, 1450)) == 255,
+          "a stroke marked as a wall stops the vision behind it");
+    auto *scout = new TokenItem("S", Qt::green, 90, 1);
+    scout->setParentItem(w.layers[1]);
+    scout->setPos(2100, 300);
+    scout->sight = 3;   // 200 px
+    c->centerOn(2450, 300);
+    drag(c, QPointF(2100, 300), QPointF(2800, 300));
+    check(QLineF(scout->centre(), QPointF(2800, 300)).length() < 0.01 && fogAt(QPointF(2450, 300)) == 0 && fogAt(QPointF(2450, 600)) == 255,
+          "a dragged token clears the fog along its way");
+    pause(500);
+    const QString file = dir + "/vision.vaxmap";
+    w.saveTo(file);
+    w.openProject(file);
+    TokenItem *back = nullptr;
+    bool wallBack = false;
+    for (QGraphicsItem *it : w.layers[1]->childItems()) {
+        back = back ? back : qgraphicsitem_cast<TokenItem *>(it);
+        if (auto *st = qgraphicsitem_cast<StrokeItem *>(it)) wallBack = st->wall;
+    }
+    check(wallBack && back && back->sight == 4.5 && back->cone && back->coneAngle == 90 && back->facing == 90 && std::abs(back->sightRadius - 300) < 0.01,
+          "vision is saved with the token, walls with their strokes");
+    w.newProject();
+}
+
 void version062(MainWindow &w, const QString &dir, const QString &image) {
     say("\n== 0.6.2 ==");
     {   // a project from a newer version: what is known loads, Save asks for a new name
@@ -1129,6 +1229,15 @@ int runSelfTest(const QStringList &args) {
         cases.push_back({"pointy-top hexes", 3000, 2000, hp, hexImage(3000, 2000, hp)});
         const Calibration hf = Calibration::hex(Calibration::HexFlat, 76.2, QPointF(33.1, 80.6));
         cases.push_back({"flat-top hexes", 3000, 2000, hf, hexImage(3000, 2000, hf)});
+        const Calibration tp = Calibration::hex(Calibration::HexPointy, 84.7, QPointF(52.2, 31.6));
+        cases.push_back({"pointy-top hexes filled with terrain", 3000, 2000, tp, terrainHexImage(3000, 2000, tp)});
+        const Calibration tf = Calibration::hex(Calibration::HexFlat, 121.3, QPointF(70.4, 44.8));
+        cases.push_back({"flat-top hexes filled with terrain", 3000, 2000, tf, terrainHexImage(3000, 2000, tf)});
+        // thick edges: their slanted sides used to line up as flat-top hexes √3 times wider, or as squares
+        const Calibration th = Calibration::hex(Calibration::HexPointy, 40, QPointF(17.3, 29.1));
+        cases.push_back({"small pointy-top hexes with thick edges", 3000, 2000, th, terrainHexImage(3000, 2000, th, 3, 255, 40)});
+        const Calibration big = Calibration::hex(Calibration::HexFlat, 150, QPointF(17.3, 29.1));
+        cases.push_back({"big flat-top hexes", 3000, 2000, big, terrainHexImage(3000, 2000, big, 5, 255, 40)});
         for (const Case &k : cases) {
             const QImage small = std::max(k.w, k.h) > 4096 ? k.img.scaled(4096, 4096, Qt::KeepAspectRatio, Qt::SmoothTransformation) : k.img;
             const Analysis a = analyse(small, k.img.size());
@@ -1166,7 +1275,7 @@ int runSelfTest(const QStringList &args) {
               QString("uneven grid: local corrections follow it (worst error %1 cells with them, %2 without, %3 regions)")
                   .arg(local, 0, 'f', 3).arg(regular, 0, 'f', 3).arg(g ? g->regions : 0));
         const auto none = detectGrid(analyse(gridImage(3000, 2000, 1, {}, 0, 45), QSize(3000, 2000)));
-        check(!none, QString("map without a grid: detection invents none%1").arg(none ? QString(" (found %1 px)").arg(none->cal.cellSize()) : ""));
+        check(!none, QString("map without a grid: detection invents none%1").arg(none ? QString(" (found %1 px, strength %2)").arg(none->cal.cellSize()).arg(none->strength) : ""));
     }
 
     // ---- app ----
@@ -1508,6 +1617,7 @@ int runSelfTest(const QStringList &args) {
     additions(w, tmp.path(), map2);
     version06(w, tmp.path(), map1, map2);
     version062(w, tmp.path(), map2);
+    version07(w, tmp.path(), map1);
     if (args.contains("--bench")) bench(w, tmp.path());
     w.dirty = false;
     say(failures ? QString("\n%1 failure(s)").arg(failures) : "\nAll tests passed.");

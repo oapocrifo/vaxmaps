@@ -33,6 +33,11 @@ QString measureText(QGraphicsScene *s, QPointF a, QPointF b);
 // Puts a token on the grid of the calibrated map under it: on a cell centre, or on a corner when it is an even
 // number of squares wide. Sizes it to its cells there.
 void snapToken(TokenItem *t);
+// Clears the fog of every map inside the token's sight (a circle or a cone, sized by the calibrated map under it,
+// stopped by strokes marked as walls). `commit` false: while dragging, the maps keep their saved fog until the drop.
+QList<MapItem *> revealSight(TokenItem *t, bool commit = true);
+// What is seen from c up to distance r when walls stop the view (scene coordinates). Empty: no wall nearby.
+QPolygonF visibleFrom(QGraphicsScene *s, QPointF c, double r);
 
 class Canvas : public QGraphicsView {
     Q_OBJECT
@@ -119,4 +124,5 @@ private:
     LinkItem *pressedLink = nullptr, *hoveredLink = nullptr;
     QVariantAnimation camera;
     QHash<QGraphicsItem *, QPointF> pressPositions;
+    QList<MapItem *> sightTouched;   // fog cleared by tokens during a drag, saved on the drop
 };

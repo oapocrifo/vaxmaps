@@ -28,8 +28,8 @@ namespace {
 
 constexpr int ANALYSIS_SIDE = 4096;          // Atlas MAX_ANALYSIS_SIDE
 constexpr double HINT_RANGE = 0.13;          // Atlas HINT_SIZE_RANGE
-constexpr double MIN_HINTED = 0.12;          // a measured cell needs less support than a detected one
-constexpr double MIN_DETECTED = 0.25;
+constexpr double MIN_HINTED = 0.65;          // a measured cell needs less support than a detected one
+constexpr double MIN_DETECTED = 1.3;    // lines are measured along their direction only (see analyse): noise scores near 1
 constexpr double DENSER_PREFERENCE = 0.75;   // Atlas DENSER_GRID_PREFERENCE
 constexpr double CLICK_TOLERANCE = 0.25;     // fitted grid must pass this close (in cells) to the clicked points
 constexpr double SQRT3 = 1.7320508075688772;
@@ -68,7 +68,7 @@ Phase fold(const float *sum, const float *count, int n, double t0, double period
     const double median = sorted[bins / 2];
     const int best = int(std::max_element(sm.begin(), sm.end()) - sm.begin());
     // Centre of the peak, so a thick line (two edges) gives its middle.
-    const int w = std::max(1, bins / 8);
+    const int w = std::max(3, bins / 8);   // at least ±3 px: both edges of a thick line
     double wsum = 0, dsum = 0;
     for (int d = -w; d <= w; ++d) {
         const double a = sm[(best + d + bins) % bins] - median;
@@ -427,16 +427,20 @@ Analysis analyse(const QImage &image, QSize full) {
             p.sum = QVector<float>(bins, 0);
             p.count = QVector<float>(bins, 0);
         }
-        // |2·centre − both sides| across the line: strong on thin lines, dark or light, weak on flat areas.
+        // |2·centre − both sides| across the line, minus twice the same along it: strong on thin lines in this
+        // direction, dark or light, weak on flat areas and on lines in other directions. Without the second part the
+        // slanted edges of pointy-top hexes made bands that looked like flat-top hexes √3 times larger.
         const int ox = int(std::lround(2 * n.x())), oy = int(std::lround(2 * n.y()));
+        const int ax = int(std::lround(2 * std::cos(ang))), ay = int(std::lround(2 * std::sin(ang)));
         for (int y = 2; y < h - 2; ++y) {
             const uchar *l = a.gray.constScanLine(y), *u = a.gray.constScanLine(y - oy), *dn = a.gray.constScanLine(y + oy);
+            const uchar *ua = a.gray.constScanLine(y - ay), *da = a.gray.constScanLine(y + ay);
             const double ty = n.y() * (y + 0.5);
             Analysis::Projection &whole = a.proj[0][k];
             Analysis::Projection &left = a.proj[y < h / 2 ? 1 : 3][k], &right = a.proj[y < h / 2 ? 2 : 4][k];
             for (int x = 2; x < w - 2; ++x) {
                 const double t = n.x() * (x + 0.5) + ty;
-                const float v = float(std::abs(2 * l[x] - u[x - ox] - dn[x + ox]));
+                const float v = float(std::max(0, std::abs(2 * l[x] - u[x - ox] - dn[x + ox]) - 2 * std::abs(2 * l[x] - ua[x - ax] - da[x + ax])));
                 const int b = std::min(int(whole.sum.size()) - 1, std::max(0, int(t - whole.t0)));
                 whole.sum[b] += v;
                 whole.count[b] += 1;
@@ -482,18 +486,37 @@ std::optional<GridFit> detectGrid(const Analysis &a) {
     if (!a.valid()) return {};
     const double avg = (a.sx + a.sy) / 2;
     const double side = std::min(a.gray.width(), a.gray.height()) / 2.0 / avg;   // a quarter's shorter side, image px
-    std::optional<GridFit> chosen;
+    struct Candidate { Grid g; Score s; bool alias = false; };
+    std::vector<Candidate> found;
     for (Grid g : {Calibration::Square, Calibration::HexPointy, Calibration::HexFlat}) {
         const bool hex = g != Calibration::Square;
-        const double lo = (hex ? 14 : 8) / avg, hi = side / (hex ? 7 : 3.5);
+        const double lo = (hex ? 14 : 8) / avg, hi = side / 3.5;
         if (hi <= lo) continue;
         std::vector<Score> quarters;
         for (int r = 1; r <= 4; ++r) quarters.push_back(detectIn(a, g, lo, hi, r));
         const Score s = combine(a, g, quarters);
-        if (s.strength >= MIN_DETECTED && s.t.size() >= 2 && (!chosen || s.strength > chosen->strength))
-            chosen = GridFit{lattice(a, g, s), s.strength, 0};
+        if (s.strength >= MIN_DETECTED && s.t.size() >= 2) found.push_back({g, s});
     }
-    if (chosen) chosen->regions = localField(a, chosen->cal, chosen->strength);
+    // The edges of hexes w wide also line up as hexes of the other orientation √3·w wide: try the smaller one.
+    for (size_t i = 0, n = found.size(); i < n; ++i)
+        if (found[i].g != Calibration::Square) {
+            const Grid other = found[i].g == Calibration::HexPointy ? Calibration::HexFlat : Calibration::HexPointy;
+            const double c = found[i].s.cell / SQRT3;
+            const Score s = search(a, other, c * 0.97, c * 1.03, 0.25 / profileLength(a));
+            if (s.t.size() >= 2) found.push_back({other, s, true});   // judged against its parent below
+        }
+    // Bigger cells score higher (a line takes a smaller share of a longer period), so the densest grid whose lines
+    // stand out at least half as much as the best one wins (a third for the √3 smaller hexes: thick edges weaken
+    // them more). Hex edges are half a cell apart, square lines one cell.
+    double best = 0;
+    for (const Candidate &c : found) best = std::max(best, c.s.strength);
+    const Candidate *pick = nullptr;
+    auto spacing = [](const Candidate &c) { return c.g == Calibration::Square ? c.s.cell : c.s.cell / 2; };
+    for (const Candidate &c : found)
+        if (c.s.strength >= (c.alias ? 0.35 : 0.5) * best && (!pick || spacing(c) < spacing(*pick))) pick = &c;
+    if (!pick) return {};
+    GridFit chosen{lattice(a, pick->g, pick->s), pick->s.strength, 0};
+    chosen.regions = localField(a, chosen.cal, chosen.strength);
     return chosen;
 }
 

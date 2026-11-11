@@ -662,6 +662,69 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
             sizes->addWidget(b);
         }
         v->addLayout(sizes);
+
+        // Vision: clears the fog where the token lands, measured with the calibration of the map under it.
+        v->addWidget(ui::caption("Vision"));
+        const MapItem *under = mapAt(scene, k->centre(), true);
+        auto *sight = new QDoubleSpinBox;
+        sight->setRange(0, 1e6);
+        sight->setDecimals(1);
+        sight->setValue(k->sight);
+        sight->setSuffix(under ? " " + under->cal.unit : QString());
+        sight->setSpecialValueText(T("none"));
+        sight->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        sight->setToolTip(T("How far the token sees. The fog of the maps it sees clears when it lands. Needs a calibrated map under it."));
+        auto *shapes = new QHBoxLayout;
+        shapes->setSpacing(3);
+        auto *shapeGroup = new QButtonGroup(propsContent);
+        auto *circle = new MenuButton("Circle"), *coneButton = new MenuButton("Cone");
+        auto *angle = new QDoubleSpinBox;
+        angle->setRange(10, 360);
+        angle->setDecimals(0);
+        angle->setValue(k->coneAngle);
+        angle->setSuffix("°");
+        angle->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        angle->setToolTip(T("Width of the cone"));
+        auto *facing = new QSlider(Qt::Horizontal);
+        facing->setRange(0, 359);
+        facing->setValue(qRound(k->facing) % 360);
+        facing->setFocusPolicy(Qt::NoFocus);
+        facing->setToolTip(T("Direction of the cone. [ and ] turn the selected tokens 15° (Shift: 45°)."));
+        for (MenuButton *b : {circle, coneButton}) {
+            b->setCheckable(true);
+            shapeGroup->addButton(b);
+            shapes->addWidget(b);
+        }
+        circle->setChecked(!k->cone);
+        coneButton->setChecked(k->cone);
+        auto sync = [k, angle, facing, circle, coneButton] {
+            const bool on = k->sight > 0;
+            circle->setEnabled(on);
+            coneButton->setEnabled(on);
+            angle->setEnabled(on && k->cone);
+            facing->setEnabled(on && k->cone);
+        };
+        sync();
+        auto changed = [this, k, sync] { sync(); revealSight(k); k->update(); setDirty(true); };
+        connect(sight, &QDoubleSpinBox::valueChanged, this, [k, changed](double x) { k->sight = x; changed(); });
+        connect(circle, &QAbstractButton::clicked, this, [k, changed] { k->cone = false; changed(); });
+        connect(coneButton, &QAbstractButton::clicked, this, [k, changed] { k->cone = true; changed(); });
+        connect(angle, &QDoubleSpinBox::valueChanged, this, [k, changed](double x) { k->coneAngle = x; changed(); });
+        connect(facing, &QSlider::valueChanged, this, [k, changed](int x) { k->facing = x; changed(); });
+        auto *visionForm = new QGridLayout;
+        visionForm->addWidget(new QLabel(T("Distance")), 0, 0);
+        visionForm->addWidget(sight, 0, 1);
+        visionForm->addLayout(shapes, 1, 0, 1, 2);
+        visionForm->addWidget(new QLabel(T("Cone width")), 2, 0);
+        visionForm->addWidget(angle, 2, 1);
+        visionForm->addWidget(new QLabel(T("Direction")), 3, 0);
+        visionForm->addWidget(facing, 3, 1);
+        v->addLayout(visionForm);
+        if (!under) {
+            auto *hint = new QLabel(T("Put the token on a calibrated map to use its vision."));
+            hint->setWordWrap(true);
+            v->addWidget(hint);
+        }
         v->addSpacing(4);
         copyRow();
         v->addWidget(deleteButton("Delete token"));
@@ -687,6 +750,16 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
     } else if (s) {
         title(T("Stroke"));
         colorRow(s->pen().color(), [s](const QColor &c) { QPen p = s->pen(); p.setColor(c); s->setPen(p); });
+        auto *wall = new MenuButton("Wall: blocks token vision");
+        wall->setCheckable(true);
+        wall->setChecked(s->wall);
+        wall->setTip("Applies to every selected stroke. Fog already cleared stays clear.");
+        connect(wall, &QAbstractButton::toggled, this, [this](bool on) {
+            for (QGraphicsItem *it : scene->selectedItems())
+                if (auto *st = qgraphicsitem_cast<StrokeItem *>(it)) { st->wall = on; st->jsonHead.clear(); }   // the undo text has it
+            setDirty(true);
+        });
+        v->addWidget(wall);
         copyRow();
         v->addWidget(deleteButton("Delete stroke"));
     }
@@ -1529,7 +1602,7 @@ void MainWindow::saveSession() {
 void MainWindow::showShortcuts() {
     static const char *const keys[][2] = {
         {"V", "Select"}, {"H", "Pan"}, {"P", "Pen"}, {"E", "Eraser"}, {"T", "Text"}, {"N", "Note"}, {"M", "Ruler"},
-        {"K", "Calibrate"}, {"B", "Token"}, {"F", "Fog brush"}, {"Alt + drag", "Cover with the fog brush"}, {"R", "Rectangle"},
+        {"K", "Calibrate"}, {"B", "Token"}, {"F", "Fog brush"}, {"Alt + drag", "Cover with the fog brush"}, {"[ / ]", "Turn the selected vision cones (Shift: 45°)"}, {"R", "Rectangle"},
         {"O", "Circle"}, {"G", "Vertices"}, {"J", "New link"}, {"Shift+J", "Show links"}, {"S", "Snap to grid"}, {"L", "Layers"},
         {"F11", "Full screen"}, {"Ctrl+0", "Fit all"}, {"Ctrl+1", "Zoom 100%"}, {"Wheel", "Zoom at the pointer"},
         {"Space + drag", "Pan (also the middle button)"}, {"Right click", "Menu, or the properties of the selected item"},

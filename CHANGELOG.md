@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7
+
+Projects from 0.6.x open unchanged. Tokens with vision saved by 0.7 open in 0.6.x without it.
+
+- **Token vision**: in a token's properties, **Vision**: a distance in the units of the map under the token, and **Circle** or **Cone**. The fog of every map inside it clears when the token is placed, along the way while it is dragged, and when its vision changes. A cone has a width (10° to 360°) and a direction: a slider, or **[** and **]** with the token selected (15° per press, 45° with Shift). Undo covers the fog again.
+- **Walls**: a pen stroke marked **Wall: blocks token vision** (right click it) stops the vision of tokens at its line. The setting applies to every selected stroke and is saved with the project.
+- Fixed: automatic detection (F) took hex maps for squares, or for hexes √3 times too big. The slanted edges of pointy-top hexes lined up as flat-top hexes √3 times wider, and the search for hexes stopped at cells 1/7 of a quarter of the map. Line evidence is now measured only along each direction, the denser of two grids that both fit wins, and hexes are searched up to the same size as squares. On 48 generated hex maps filled with terrain colours (hexes 30 to 150 px wide, edges 1 to 5 px, faint and strong) it now finds 43. 0.6.2 found 3 of a similar set. The 5 missed are hexes 30 px wide with faint or 5 px edges.
+- Detection asks for stronger evidence before it reports a grid on a map with walls and no grid.
+
 ## 0.6.2
 
 Fixes and maintenance. Projects from 0.6 and 0.6.1 open unchanged.

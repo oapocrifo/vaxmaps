@@ -148,7 +148,22 @@ TokenItem::TokenItem(const QString &name, const QColor &color, double diameter, 
 
 QRectF TokenItem::boundingRect() const {
     const double r = diameter / 2;
-    return QRectF(-r * 1.6, -r - 2, r * 3.2, diameter * 1.45 + 4);   // the name sits under the disc and may be wider
+    const QRectF own(-r * 1.6, -r - 2, r * 3.2, diameter * 1.45 + 4);   // the name sits under the disc and may be wider
+    const double s = sight > 0 ? sightRadius + 1 : 0;
+    return own.united(QRectF(-s, -s, 2 * s, 2 * s));
+}
+
+QPainterPath TokenItem::sightArea(double radius) const {
+    QPainterPath path;
+    if (!cone) {
+        path.addEllipse(QPointF(0, 0), radius, radius);
+        return path;
+    }
+    // Qt arcs turn counterclockwise on screen; facing turns clockwise.
+    path.moveTo(0, 0);
+    path.arcTo(QRectF(-radius, -radius, 2 * radius, 2 * radius), -(facing + coneAngle / 2), coneAngle);
+    path.closeSubpath();
+    return path;
 }
 
 QPainterPath TokenItem::shape() const {
@@ -160,6 +175,11 @@ QPainterPath TokenItem::shape() const {
 void TokenItem::paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) {
     const double r = diameter / 2;
     p->setRenderHint(QPainter::Antialiasing);
+    if (sight > 0 && sightRadius > 0 && (isSelected() || cone)) {   // a cone always shows where it points
+        p->setPen(QPen(QColor(255, 220, 90, isSelected() ? 230 : 110), 0, Qt::DashLine));
+        p->setBrush(QColor(255, 220, 90, isSelected() ? 30 : 0));
+        p->drawPath(sightArea(sightRadius));
+    }
     p->setPen(QPen(isSelected() ? QColor(80, 160, 255) : QColor(255, 255, 255), diameter * (isSelected() ? 0.09 : 0.06)));
     p->setBrush(color);
     p->drawEllipse(QPointF(0, 0), r * 0.94, r * 0.94);

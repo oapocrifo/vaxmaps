@@ -83,6 +83,7 @@ QJsonObject itemToJson(QGraphicsItem *it, const QDir &base, bool strokePoints = 
         o["type"] = "stroke";
         o["color"] = s->pen().color().name(QColor::HexArgb);
         o["width"] = s->pen().widthF();
+        if (s->wall) o["wall"] = true;
         if (strokePoints) o["pts"] = pointsToJson(s->pts);
     } else if (auto *k = qgraphicsitem_cast<TokenItem *>(it)) {
         o["type"] = "token";
@@ -90,6 +91,13 @@ QJsonObject itemToJson(QGraphicsItem *it, const QDir &base, bool strokePoints = 
         o["color"] = k->color.name(QColor::HexArgb);
         o["d"] = k->diameter;
         o["cells"] = k->cells;
+        if (k->sight > 0) {
+            o["sight"] = k->sight;
+            o["cone"] = k->cone;
+            o["coneAngle"] = k->coneAngle;
+            o["facing"] = k->facing;
+            o["sightR"] = k->sightRadius;
+        }
     } else if (auto *t = qgraphicsitem_cast<TextItem *>(it)) {
         if (t->toPlainText().trimmed().isEmpty()) return {};   // just created, nothing typed yet: it deletes itself when the edit ends
         o["type"] = t->note ? "note" : "text";
@@ -132,11 +140,18 @@ QGraphicsItem *itemFromJson(const QJsonObject &o, const QDir &base, int version)
     } else if (type == "stroke") {
         auto *s = new StrokeItem(QColor(o["color"].toString()), o["width"].toDouble(4));
         s->setPoints(pointsFromJson(o["pts"].toArray()));
+        s->wall = o["wall"].toBool();
         it = s;
     } else if (type == "token") {
         const double d = o["d"].toDouble();
         if (!(d > 0)) return nullptr;
-        it = new TokenItem(o["name"].toString(), QColor(o["color"].toString()), d, qBound(1, o["cells"].toInt(1), 4));
+        auto *k = new TokenItem(o["name"].toString(), QColor(o["color"].toString()), d, qBound(1, o["cells"].toInt(1), 4));
+        k->sight = std::max(0.0, o["sight"].toDouble());
+        k->cone = o["cone"].toBool();
+        k->coneAngle = qBound(10.0, o["coneAngle"].toDouble(90), 360.0);
+        k->facing = o["facing"].toDouble();
+        if (k->sight > 0) k->setSightRadius(std::max(0.0, o["sightR"].toDouble()));
+        it = k;
     } else if (type == "text" || type == "note") {
         auto *t = new TextItem(type == "note", QColor(o["color"].toString()));
         t->setPlainText(o["text"].toString());

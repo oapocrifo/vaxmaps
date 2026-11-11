@@ -53,6 +53,7 @@ public:
     void enableFog(bool covered);                         // a new fog, all covered or all revealed
     void setFog(const QImage &mask);                       // loaded from a project or an undo step
     void paintFog(QPointF a, QPointF b, double width, bool cover);   // item coordinates
+    void clearFog(const QPainterPath &area);                // item coordinates
     void fogStrokeDone();
     std::optional<Calibration> preview;   // grid being calibrated, drawn in yellow until applied
 

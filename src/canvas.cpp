@@ -110,6 +110,64 @@ void snapToken(TokenItem *t) {
     t->setPos(t->pos() + m->mapToScene(target) - t->centre());   // layers have no transform: scene offsets are position offsets
 }
 
+QPolygonF visibleFrom(QGraphicsScene *s, QPointF c, double r) {
+    const QRectF reach(c.x() - r, c.y() - r, 2 * r, 2 * r);
+    QVector<QLineF> walls;
+    for (QGraphicsItem *it : s->items(reach))
+        if (auto *w = qgraphicsitem_cast<StrokeItem *>(it); w && w->wall && w->isVisible())
+            for (int i = 1; i < w->pts.size(); ++i) {
+                const QLineF l(w->mapToScene(w->pts[i - 1]), w->mapToScene(w->pts[i]));
+                if (reach.intersects(QRectF(l.p1(), l.p2()).normalized().adjusted(-1, -1, 1, 1))) walls << l;
+            }
+    if (walls.isEmpty()) return {};
+    // Rays every 0.5° for the round edge, and just either side of each wall end so corners are exact.
+    std::vector<double> angles;
+    for (int i = 0; i < 720; ++i) angles.push_back(i * M_PI / 360);
+    for (const QLineF &l : walls)
+        for (QPointF e : {l.p1(), l.p2()}) {
+            const double a = std::atan2(e.y() - c.y(), e.x() - c.x());
+            for (double d : {-1e-4, 0.0, 1e-4}) angles.push_back(std::fmod(a + d + 2 * M_PI, 2 * M_PI));
+        }
+    std::sort(angles.begin(), angles.end());
+    QPolygonF seen;
+    for (double a : angles) {
+        const QPointF dir(std::cos(a), std::sin(a));
+        double t = r;
+        for (const QLineF &l : walls) {   // ray c + t·dir against segment p1 + u·(p2 − p1)
+            const QPointF e = l.p2() - l.p1(), w = l.p1() - c;
+            const double den = dir.x() * e.y() - dir.y() * e.x();
+            if (std::abs(den) < 1e-12) continue;
+            const double tt = (w.x() * e.y() - w.y() * e.x()) / den, u = (w.x() * dir.y() - w.y() * dir.x()) / den;
+            if (tt > 0 && tt < t && u >= 0 && u <= 1) t = tt;
+        }
+        seen << c + t * dir;
+    }
+    return seen;
+}
+
+QList<MapItem *> revealSight(TokenItem *t, bool commit) {
+    MapItem *under = t->scene() && t->sight > 0 ? mapAt(t->scene(), t->centre(), true) : nullptr;
+    if (!under || !(under->cal.unitsPerCell > 0)) return {};
+    const double r = t->sight / under->cal.unitsPerCell * under->cal.cellSize() * under->scale() / t->scale();
+    t->setSightRadius(r);
+    QPainterPath area = t->mapToScene(t->sightArea(r));
+    if (const QPolygonF seen = visibleFrom(t->scene(), t->centre(), r * t->scale()); !seen.isEmpty()) {
+        QPainterPath p;
+        p.addPolygon(seen);
+        area = area.intersected(p);
+    }
+    QList<MapItem *> touched;
+    for (QGraphicsItem *it : t->scene()->items(area))
+        if (auto *m = qgraphicsitem_cast<MapItem *>(it); m && !m->fog.isNull() && m->isVisible()) {
+            m->clearFog(m->mapFromScene(area));
+            if (commit) m->fogStrokeDone();
+            touched << m;
+        }
+    t->update();
+    if (commit && !touched.isEmpty()) sceneEdited();
+    return touched;
+}
+
 Canvas::Canvas(QGraphicsScene *scene, QWidget *parent) : QGraphicsView(scene, parent) {
     setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform | QPainter::TextAntialiasing);
     // Cosmetic pens and screen-sized labels have no fixed scene bounds; full repaints avoid leftover pixels.
@@ -312,6 +370,7 @@ void Canvas::mousePressEvent(QMouseEvent *e) {
         k->setParentItem(activeLayer);
         k->setPos(sp);
         snapToken(k);
+        revealSight(k);
         scene()->clearSelection();
         k->setSelected(true);
         sceneEdited();
@@ -423,6 +482,11 @@ void Canvas::mouseMoveEvent(QMouseEvent *e) {
         return;
     }
     QGraphicsView::mouseMoveEvent(e);
+    if (currentTool == Select && (e->buttons() & Qt::LeftButton))   // tokens being dragged see along the way
+        for (auto it = pressPositions.cbegin(); it != pressPositions.cend(); ++it)
+            if (auto *k = qgraphicsitem_cast<TokenItem *>(it.key()); k && k->sight > 0 && alive(k) && k->pos() != it.value())
+                for (MapItem *m : revealSight(k, false))
+                    if (!sightTouched.contains(m)) sightTouched << m;
 }
 
 void Canvas::mouseReleaseEvent(QMouseEvent *e) {
@@ -468,8 +532,11 @@ void Canvas::mouseReleaseEvent(QMouseEvent *e) {
         for (auto it = pressPositions.cbegin(); it != pressPositions.cend(); ++it)
             if (alive(it.key()) && it.key()->pos() != it.value()) {
                 moved = true;
-                if (auto *k = qgraphicsitem_cast<TokenItem *>(it.key())) snapToken(k);
+                if (auto *k = qgraphicsitem_cast<TokenItem *>(it.key())) { snapToken(k); revealSight(k); }
             }
+        for (MapItem *m : sightTouched)
+            if (alive(m)) m->fogStrokeDone();
+        sightTouched.clear();
         if (moved) sceneEdited();
         pressPositions.clear();
     }
@@ -640,6 +707,18 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
     if (e->key() == Qt::Key_J && (e->modifiers() & Qt::ShiftModifier)) {
         showLinks(!linksVisible);
         emit status(T(linksVisible ? "Links shown: select, resize or delete them. Double click one to jump." : "Links hidden: click one to jump to its pair."));
+        return;
+    }
+    if (e->key() == Qt::Key_BracketLeft || e->key() == Qt::Key_BracketRight || e->key() == Qt::Key_BraceLeft
+        || e->key() == Qt::Key_BraceRight) {   // turn the selected cones 15°, 45° with Shift
+        const double step = (e->modifiers() & Qt::ShiftModifier ? 45 : 15)
+                            * (e->key() == Qt::Key_BracketLeft || e->key() == Qt::Key_BraceLeft ? -1 : 1);
+        for (QGraphicsItem *it : scene()->selectedItems())
+            if (auto *k = qgraphicsitem_cast<TokenItem *>(it); k && k->cone) {
+                k->facing = std::fmod(k->facing + step + 360, 360);
+                revealSight(k);
+                sceneEdited();
+            }
         return;
     }
     // Tool letters live here instead of QAction shortcuts so typing in a text item never switches tools.

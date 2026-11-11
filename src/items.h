@@ -33,6 +33,7 @@ public:
     void setPoints(const QVector<QPointF> &p);
     void addPoint(QPointF p);
     QVector<QPointF> pts;   // item coordinates
+    bool wall = false;      // blocks token vision
     // Undo steps: the stroke as JSON text, and what it was made from. Each part is used only while that still matches.
     QVector<QPointF> jsonPts;
     QByteArray jsonPart;   // the points
@@ -138,6 +139,14 @@ public:
     QColor color;
     double diameter;   // item units
     int cells;
+    // Vision: reveals the fog around the token when it lands (revealSight in canvas.h). 0 = none.
+    double sight = 0;            // in the units of the map under it (m, ft...)
+    bool cone = false;
+    double coneAngle = 90;       // degrees
+    double facing = 0;           // degrees, clockwise from pointing right
+    double sightRadius = 0;      // item units, from the last reveal; outlined while selected
+    QPainterPath sightArea(double radius) const;   // item coordinates
+    void setSightRadius(double r) { prepareGeometryChange(); sightRadius = r; }
 };
 
 // Links: pairs of areas; clicking one moves the camera to the other at the same zoom. They are invisible (but

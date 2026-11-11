@@ -12,6 +12,22 @@ namespace {
 
 // English text, Portuguese (Brazil) text. %1, %2... keep their numbers; %L2 prints that number with a decimal comma.
 const char *const table[][2] = {
+    // token vision (0.7)
+    {"Vision", "Visão"},
+    {"none", "nenhuma"},
+    {"How far the token sees. The fog of the maps it sees clears when it lands. Needs a calibrated map under it.",
+     "Até onde o token enxerga. A névoa dos mapas que ele vê some quando ele pousa. Precisa de um mapa calibrado embaixo dele."},
+    {"Cone", "Cone"},
+    {"Width of the cone", "Abertura do cone"},
+    {"Direction of the cone. [ and ] turn the selected tokens 15° (Shift: 45°).",
+     "Direção do cone. [ e ] giram os tokens selecionados 15° (Shift: 45°)."},
+    {"Distance", "Distância"},
+    {"Cone width", "Abertura"},
+    {"Direction", "Direção"},
+    {"Put the token on a calibrated map to use its vision.", "Ponha o token num mapa calibrado para usar a visão."},
+    {"Turn the selected vision cones (Shift: 45°)", "Girar os cones de visão selecionados (Shift: 45°)"},
+    {"Wall: blocks token vision", "Parede: bloqueia a visão dos tokens"},
+    {"Applies to every selected stroke. Fog already cleared stays clear.", "Vale para todos os traços selecionados. A névoa já revelada continua revelada."},
     // menu
     {"Tools", "Ferramentas"},
     {"Select", "Selecionar"},

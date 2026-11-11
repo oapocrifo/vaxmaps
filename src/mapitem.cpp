@@ -344,6 +344,17 @@ void MapItem::paintFog(QPointF a, QPointF b, double width, bool cover) {
     update();
 }
 
+void MapItem::clearFog(const QPainterPath &area) {
+    if (fog.isNull()) return;
+    QPainter p(&fog);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setCompositionMode(QPainter::CompositionMode_Clear);
+    p.scale(fog.width() / boundingRect().width(), fog.height() / boundingRect().height());
+    p.translate(-boundingRect().topLeft());
+    p.fillPath(area, Qt::black);
+    update();
+}
+
 void MapItem::fogStrokeDone() {
     fogPng.clear();
     if (fog.isNull()) return;
