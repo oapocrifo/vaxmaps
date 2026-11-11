@@ -22,7 +22,7 @@ public:
     MainWindow();
     ~MainWindow() override;
     MapItem *importMap(const QString &path, QPointF scenePos);
-    LayerItem *addLayer(const QString &name);
+    LayerItem *addLayer(const QString &name, bool links = false);
     void newProject();
     bool openProject(const QString &file);
     bool saveTo(const QString &file);
@@ -65,7 +65,7 @@ private:
     QTreeWidget *layerList;
     bool refreshing = false, wasMaximized = false;
     QList<MenuButton *> toolButtons;
-    MenuButton *snapButton, *layersButton, *fullButton;
+    MenuButton *snapButton, *layersButton, *fullButton, *linksButton;
     SwatchRow *menuSwatches;
     QSlider *widthSlider;
     QLabel *widthLabel;

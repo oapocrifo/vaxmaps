@@ -3,18 +3,11 @@
 #include <QImage>
 #include <QSharedPointer>
 #include <optional>
+#include "grid.h"
 
 // Content pixels per tile. Tile files carry 1 px from each neighbour so bilinear filtering shows no seams.
 constexpr int TILE = 510;
 
-struct Calibration {
-    double cellPx = 0;          // grid cell size in image pixels, 0 = not calibrated
-    QPointF origin;             // one grid intersection, in image pixels
-    double unitsPerCell = 1.5;
-    QString unit = "m";
-    bool showGrid = false;
-    bool valid() const { return cellPx > 0; }
-};
 
 // One per source image, shared by every MapItem that shows it.
 // Holds a tile pyramid on disk (level 0 = full size, each level half the previous one)

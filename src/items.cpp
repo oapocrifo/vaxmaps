@@ -14,10 +14,12 @@
 #include <cmath>
 
 std::function<void()> onSceneEdited;
+bool linksVisible = false;
 
 // ---- LayerItem ----
 
 void LayerItem::applyLock(QGraphicsItem *c) const {
+    if (c->type() == LinkItem::Type) return static_cast<LinkItem *>(c)->syncFlags();
     c->setFlag(ItemIsSelectable, !locked);
     c->setFlag(ItemIsMovable, !locked);
     c->setAcceptedMouseButtons(locked ? Qt::NoButton : Qt::AllButtons);   // clicks fall through to layers below
@@ -297,8 +299,8 @@ HandleItem::HandleItem(ZoneItem *zone, bool vertex, int index) : QGraphicsObject
     static const Qt::CursorShape cursors[8] = {Qt::SizeFDiagCursor, Qt::SizeVerCursor, Qt::SizeBDiagCursor, Qt::SizeHorCursor,
                                                Qt::SizeFDiagCursor, Qt::SizeVerCursor, Qt::SizeBDiagCursor, Qt::SizeHorCursor};
     setCursor(vertex ? Qt::SizeAllCursor : cursors[index]);
-    setToolTip(vertex ? "Arraste para mover o vértice. Botão direito remove."
-                      : "Arraste para redimensionar. Shift num canto mantém a proporção.");
+    setToolTip(vertex ? "Drag to move the vertex. Right click removes it."
+                      : "Drag to resize. Shift on a corner keeps the proportions.");
     setOpacity(0);
     auto *a = new QPropertyAnimation(this, "opacity", this);   // handles fade in when the zone is selected
     a->setDuration(160);
@@ -368,6 +370,76 @@ void HandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent *e) {
 
 void HandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent *) {
     if (moved) sceneEdited();
+}
+
+// ---- LinkItem ----
+
+LinkItem::LinkItem(const QRectF &r, const QColor &color) : ZoneItem(Rect, {r.topLeft(), r.bottomRight()}, color) {
+    glowAnim.setDuration(180);
+    glowAnim.setEasingCurve(QEasingCurve::OutCubic);
+    QObject::connect(&glowAnim, &QVariantAnimation::valueChanged, [this](const QVariant &v) { glow = v.toDouble(); update(); });
+    syncFlags();
+}
+
+LinkItem::~LinkItem() {
+    if (partner) partner->partner = nullptr;
+}
+
+void LinkItem::syncFlags() {
+    const auto *layer = static_cast<const LayerItem *>(parentItem());
+    const bool editable = linksVisible && !(layer && layer->locked);
+    setFlag(ItemIsSelectable, editable);
+    setFlag(ItemIsMovable, editable);
+    if (!editable) setSelected(false);
+    update();
+}
+
+void LinkItem::setHover(bool on) { ui::glide(glowAnim, glow, on ? 1 : 0, on ? 160 : 260); }
+
+void LinkItem::paint(QPainter *p, const QStyleOptionGraphicsItem *o, QWidget *) {
+    const QRectF r = box();
+    p->setRenderHint(QPainter::Antialiasing);
+    if (!linksVisible) {
+        if (glow < 0.01) return;
+        QColor fill = color, edge = color;
+        fill.setAlphaF(0.22 * glow);
+        edge.setAlphaF(0.9 * glow);
+        QPen pen(edge, 2);
+        pen.setCosmetic(true);
+        p->setPen(pen);
+        p->setBrush(fill);
+        p->drawRect(r);
+        return;
+    }
+    QColor fill = color;
+    fill.setAlpha(70);
+    QPen pen(partner ? color : ui::danger, 2, isSelected() ? Qt::DashLine : Qt::DashDotLine);
+    pen.setCosmetic(true);
+    p->setPen(pen);
+    p->setBrush(fill);
+    p->drawRect(r);
+    const double lod = QStyleOptionGraphicsItem::levelOfDetailFromTransform(p->worldTransform());
+    if (lod <= 0) return;
+    const QString label = (name.isEmpty() ? QString("Link") : name) + (partner ? QString("  ⇄") : QString("  (no pair)"));
+    QFont f = p->font();
+    f.setPixelSize(13);
+    f.setBold(true);
+    if (r.width() * lod < QFontMetrics(f).horizontalAdvance(label) + 8) return;
+    p->save();
+    p->translate(r.center());
+    p->scale(1 / lod, 1 / lod);
+    p->setFont(f);
+    p->setPen(QColor(0, 0, 0, 200));
+    p->drawText(QRectF(-200, -11, 400, 24), Qt::AlignCenter, label);
+    p->setPen(Qt::white);
+    p->drawText(QRectF(-200, -12, 400, 24), Qt::AlignCenter, label);
+    p->restore();
+}
+
+void setLinksVisible(QGraphicsScene *s, bool on) {
+    linksVisible = on;
+    for (QGraphicsItem *it : s->items())
+        if (it->type() == LinkItem::Type) static_cast<LinkItem *>(it)->syncFlags();
 }
 
 // ---- LabelItem ----

@@ -102,7 +102,7 @@ MainWindow::MainWindow() {
 
     newProject();
     resize(1500, 950);
-    say("Clique com o botão direito para abrir o menu. L mostra as camadas, F11 alterna a tela cheia.");
+    say("Right click opens the menu. L shows the layers, F11 toggles full screen.");
 }
 
 MainWindow::~MainWindow() {
@@ -132,15 +132,15 @@ void MainWindow::buildMenu() {
 
     struct ToolDef { Canvas::Tool tool; const char *name, *key; };
     static const ToolDef tools[] = {   // order matches Canvas::Tool
-        {Canvas::Select, "Selecionar", "V"}, {Canvas::Pan, "Mover vista", "H"}, {Canvas::Pen, "Caneta", "P"},
-        {Canvas::Eraser, "Borracha", "E"}, {Canvas::Text, "Texto", "T"}, {Canvas::Note, "Nota", "N"},
-        {Canvas::Measure, "Régua", "M"}, {Canvas::Calibrate, "Calibrar", "K"}, {Canvas::ZoneRect, "Retângulo", "R"},
-        {Canvas::ZoneEllipse, "Círculo", "O"}, {Canvas::ZonePoly, "Vértices", "G"}};
+        {Canvas::Select, "Select", "V"}, {Canvas::Pan, "Pan", "H"}, {Canvas::Pen, "Pen", "P"},
+        {Canvas::Eraser, "Eraser", "E"}, {Canvas::Text, "Text", "T"}, {Canvas::Note, "Note", "N"},
+        {Canvas::Measure, "Ruler", "M"}, {Canvas::Calibrate, "Calibrate", "K"}, {Canvas::ZoneRect, "Rectangle", "R"},
+        {Canvas::ZoneEllipse, "Circle", "O"}, {Canvas::ZonePoly, "Vertices", "G"}, {Canvas::Link, "New link", "J"}};
     auto *group = new QButtonGroup(this);
     QGridLayout *grid = nullptr;
     for (int i = 0; i < int(std::size(tools)); ++i) {
-        if (i == 0 || i == 8) {
-            v->addWidget(ui::caption(i == 0 ? "Ferramentas" : "Zonas"));
+        if (i == 0 || i == 8 || i == 11) {
+            v->addWidget(ui::caption(i == 0 ? "Tools" : i == 8 ? "Zones" : "Links between maps"));
             grid = new QGridLayout;
             grid->setSpacing(3);
             v->addLayout(grid);
@@ -149,14 +149,19 @@ void MainWindow::buildMenu() {
         auto *b = new MenuButton(t.name, t.key);
         b->setCheckable(true);
         group->addButton(b);
-        const int k = i < 8 ? i : i - 8;
+        const int k = i < 8 ? i : i < 11 ? i - 8 : 0;
         grid->addWidget(b, k / 3, k % 3);
         connect(b, &QAbstractButton::clicked, this, [this, t] { menu->dismiss(); canvas->setTool(t.tool); canvas->setFocus(); });
         toolButtons << b;
     }
+    linksButton = new MenuButton("Show links", "Shift+J");
+    linksButton->setCheckable(true);
+    connect(linksButton, &QAbstractButton::clicked, this, [this](bool on) { menu->dismiss(); canvas->showLinks(on); });
+    connect(canvas, &Canvas::linksShown, this, [this](bool on) { linksButton->setChecked(on); refreshLayers(); });
+    grid->addWidget(linksButton, 0, 1, 1, 2);
     connect(canvas, &Canvas::toolChanged, this, [this](int t) { toolButtons[t]->setChecked(true); });
 
-    v->addWidget(ui::caption("Cor e espessura"));
+    v->addWidget(ui::caption("Colour and width"));
     menuSwatches = new SwatchRow;
     connect(menuSwatches, &SwatchRow::picked, this, [this](const QColor &c) { canvas->color = c; });
     v->addWidget(menuSwatches);
@@ -171,50 +176,50 @@ void MainWindow::buildMenu() {
     row->addWidget(widthLabel);
     v->addLayout(row);
 
-    v->addWidget(ui::caption("Exibir"));
+    v->addWidget(ui::caption("View"));
     grid = new QGridLayout;
     grid->setSpacing(3);
-    snapButton = new MenuButton("Snap na grade", "S");
+    snapButton = new MenuButton("Snap to grid", "S");
     snapButton->setCheckable(true);
     connect(snapButton, &QAbstractButton::toggled, this, [](bool on) { snapEnabled = on; });
     connect(canvas, &Canvas::snapChanged, snapButton, &QAbstractButton::setChecked);
-    layersButton = new MenuButton("Camadas", "L");
+    layersButton = new MenuButton("Layers", "L");
     layersButton->setCheckable(true);
     connect(layersButton, &QAbstractButton::clicked, this, [this] { toggleLayers(); });
-    fullScreenAction = action("Tela cheia", QKeySequence(Qt::Key_F11), [this] { toggleFullScreen(); });
-    fullButton = new MenuButton("Tela cheia", "F11");
+    fullScreenAction = action("Full screen", QKeySequence(Qt::Key_F11), [this] { toggleFullScreen(); });
+    fullButton = new MenuButton("Full screen", "F11");
     fullButton->setCheckable(true);
     connect(fullButton, &QAbstractButton::clicked, this, [this] { toggleFullScreen(); });
     grid->addWidget(snapButton, 0, 0);
     grid->addWidget(layersButton, 0, 1);
     grid->addWidget(fullButton, 0, 2);
-    grid->addWidget(menuButton(action("Ajustar à tela", QKeySequence("Ctrl+0"), [this] { fitAll(); })), 1, 0);
+    grid->addWidget(menuButton(action("Fit all", QKeySequence("Ctrl+0"), [this] { fitAll(); })), 1, 0);
     grid->addWidget(menuButton(action("Zoom 100%", QKeySequence("Ctrl+1"), [this] {
                         const QPointF c = canvas->mapToScene(canvas->viewport()->rect().center());
                         canvas->resetTransform();
                         canvas->centerOn(c);
                         emit canvas->zoomChanged(1);
                     })), 1, 1);
-    action("Aumentar zoom", QKeySequence::ZoomIn, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(1.25); });
-    action("Diminuir zoom", QKeySequence::ZoomOut, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(0.8); });
+    action("Zoom in", QKeySequence::ZoomIn, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(1.25); });
+    action("Zoom out", QKeySequence::ZoomOut, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(0.8); });
     v->addLayout(grid);
 
-    v->addWidget(ui::caption("Projeto"));
+    v->addWidget(ui::caption("Project"));
     grid = new QGridLayout;
     grid->setSpacing(3);
-    grid->addWidget(menuButton(action("Novo", QKeySequence::New, [this] { if (maybeSave()) newProject(); })), 0, 0);
-    grid->addWidget(menuButton(action("Abrir…", QKeySequence::Open, [this] { open(); })), 0, 1);
-    grid->addWidget(menuButton(action("Salvar", QKeySequence::Save, [this] { save(); })), 1, 0);
-    grid->addWidget(menuButton(action("Salvar como…", QKeySequence("Ctrl+Shift+S"), [this] { saveAs(); })), 1, 1);
-    grid->addWidget(menuButton(action("Importar mapas…", QKeySequence("Ctrl+I"), [this] { importDialog(); })), 2, 0);
-    grid->addWidget(menuButton(action("Sair", QKeySequence("Ctrl+Q"), [this] { close(); })), 2, 1);
+    grid->addWidget(menuButton(action("New", QKeySequence::New, [this] { if (maybeSave()) newProject(); })), 0, 0);
+    grid->addWidget(menuButton(action("Open…", QKeySequence::Open, [this] { open(); })), 0, 1);
+    grid->addWidget(menuButton(action("Save", QKeySequence::Save, [this] { save(); })), 1, 0);
+    grid->addWidget(menuButton(action("Save as…", QKeySequence("Ctrl+Shift+S"), [this] { saveAs(); })), 1, 1);
+    grid->addWidget(menuButton(action("Import maps…", QKeySequence("Ctrl+I"), [this] { importDialog(); })), 2, 0);
+    grid->addWidget(menuButton(action("Quit", QKeySequence("Ctrl+Q"), [this] { close(); })), 2, 1);
     v->addLayout(grid);
 
-    v->addWidget(ui::caption("Seleção"));
+    v->addWidget(ui::caption("Selection"));
     grid = new QGridLayout;
     grid->setSpacing(3);
-    grid->addWidget(menuButton(action("Mover para a camada ativa", QKeySequence("Ctrl+M"), [this] { moveSelectionToActiveLayer(); })), 0, 0, 1, 2);
-    auto *del = new MenuButton("Excluir", "Del");
+    grid->addWidget(menuButton(action("Move to the active layer", QKeySequence("Ctrl+M"), [this] { moveSelectionToActiveLayer(); })), 0, 0, 1, 2);
+    auto *del = new MenuButton("Delete", "Del");
     del->ink = ui::danger;
     connect(del, &QAbstractButton::clicked, this, [this] { menu->dismiss(); canvas->deleteSelected(); });
     grid->addWidget(del, 0, 2);
@@ -249,7 +254,7 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         return b;
     };
     auto colorRow = [this, v](const QColor &current, std::function<void(const QColor &)> apply) {
-        v->addWidget(ui::caption("Cor"));
+        v->addWidget(ui::caption("Colour"));
         auto *s = new SwatchRow;
         s->setCurrent(current);
         connect(s, &SwatchRow::picked, this, [this, apply](const QColor &c) { apply(c); setDirty(true); });
@@ -262,30 +267,37 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
     auto *t = qgraphicsitem_cast<TextItem *>(it);
     auto *s = qgraphicsitem_cast<StrokeItem *>(it);
     if (sel.size() > 1) {
-        v->addWidget(heading(QString("%1 itens selecionados").arg(sel.size())));
-        auto *move = new MenuButton("Mover para a camada ativa", "Ctrl+M");
+        v->addWidget(heading(QString("%1 items selected").arg(sel.size())));
+        auto *move = new MenuButton("Move to the active layer", "Ctrl+M");
         connect(move, &QAbstractButton::clicked, this, [this] { props->dismiss(); moveSelectionToActiveLayer(); });
         v->addWidget(move);
-        v->addWidget(deleteButton("Excluir seleção"));
+        v->addWidget(deleteButton("Delete selection"));
     } else if (z) {
-        v->addWidget(heading(z->shapeKind == ZoneItem::Rect ? "Zona retangular" : z->shapeKind == ZoneItem::Ellipse ? "Zona circular" : "Zona por vértices"));
-        v->addWidget(ui::caption("Nome"));
+        v->addWidget(heading(z->shapeKind == ZoneItem::Rect ? "Rectangle zone" : z->shapeKind == ZoneItem::Ellipse ? "Circle zone" : "Vertex zone"));
+        v->addWidget(ui::caption("Name"));
         auto *name = new QLineEdit(z->name);
-        name->setPlaceholderText("Sem nome");
+        name->setPlaceholderText("Unnamed");
         connect(name, &QLineEdit::textChanged, this, [this, z](const QString &n) { z->name = n; z->update(); setDirty(true); });
         v->addWidget(name);
         colorRow(z->color, [z](const QColor &c) { z->color = c; z->update(); });
-        v->addWidget(ui::caption("Descrição"));
+        v->addWidget(ui::caption("Description"));
         auto *desc = new QPlainTextEdit(z->desc);
         desc->setFixedHeight(96);
-        desc->setPlaceholderText("Notas sobre esta área");
+        desc->setPlaceholderText("Notes about this area");
         connect(desc, &QPlainTextEdit::textChanged, this, [this, z, desc] { z->setDesc(desc->toPlainText()); setDirty(true); });
         v->addWidget(desc);
         v->addSpacing(4);
-        v->addWidget(deleteButton("Excluir zona"));
+        v->addWidget(deleteButton("Delete zone"));
     } else if (m) {
-        v->addWidget(heading("Mapa · " + QFileInfo(m->src->path).fileName()));
-        v->addWidget(ui::caption("Grade"));
+        v->addWidget(heading("Map · " + QFileInfo(m->src->path).fileName()));
+        const Calibration &cal = m->cal;
+        v->addWidget(ui::caption("Grid"));
+        auto *kind = new QLabel(!cal.valid() ? QString("Not calibrated yet.")
+                                : QString("%1, cell of %2 px%3").arg(cal.grid == Calibration::Square ? "Squares" : cal.grid == Calibration::HexPointy ? "Hexes, pointy top" : "Hexes, flat top")
+                                      .arg(cal.cellSize(), 0, 'f', 2)
+                                      .arg(cal.field.isEmpty() ? QString() : QString(", follows local variations")));
+        kind->setWordWrap(true);
+        v->addWidget(kind);
         auto *form = new QGridLayout;
         auto spin = [](double lo, double hi, double val, const QString &suffix) {
             auto *sp = new QDoubleSpinBox;
@@ -296,41 +308,64 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
             sp->setButtonSymbols(QAbstractSpinBox::NoButtons);
             return sp;
         };
-        auto *cell = spin(0, 100000, m->cal.cellPx, " px");
-        auto *per = spin(0.001, 1e6, m->cal.unitsPerCell, "");
-        auto *unit = new QLineEdit(m->cal.unit);
-        form->addWidget(new QLabel("1 quadrado"), 0, 0);
+        auto *cell = spin(0, 100000, cal.valid() ? cal.cellSize() : 0, " px");
+        cell->setEnabled(cal.valid());
+        auto *per = spin(0.001, 1e6, cal.unitsPerCell, "");
+        auto *unit = new QLineEdit(cal.unit);
+        form->addWidget(new QLabel(cal.isHex() ? "1 hex" : "1 square"), 0, 0);
         form->addWidget(cell, 0, 1, 1, 2);
-        form->addWidget(new QLabel("Vale"), 1, 0);
+        form->addWidget(new QLabel("Is worth"), 1, 0);
         form->addWidget(per, 1, 1);
         form->addWidget(unit, 1, 2);
         v->addLayout(form);
         auto edit = [this, m](auto fn) { fn(m->cal); m->update(); setDirty(true); };
-        connect(cell, &QDoubleSpinBox::valueChanged, this, [edit](double x) { edit([x](Calibration &c) { c.cellPx = x; }); });
+        connect(cell, &QDoubleSpinBox::editingFinished, this, [edit, cell] { edit([cell](Calibration &c) { c.scaleCell(cell->value()); }); });
         connect(per, &QDoubleSpinBox::valueChanged, this, [edit](double x) { edit([x](Calibration &c) { c.unitsPerCell = x; }); });
         connect(unit, &QLineEdit::textChanged, this, [edit](const QString &u) { edit([u](Calibration &c) { c.unit = u; }); });
-        auto *grid = new MenuButton("Mostrar grade calibrada");
+        auto *grid = new MenuButton("Show the calibrated grid");
         grid->setCheckable(true);
         grid->setChecked(m->cal.showGrid);
         grid->setEnabled(m->cal.valid());
         connect(grid, &QAbstractButton::toggled, this, [edit](bool on) { edit([on](Calibration &c) { c.showGrid = on; }); });
         v->addWidget(grid);
-        auto *calibrate = new MenuButton("Calibrar a grade", "K");
+        auto *calibrate = new MenuButton("Calibrate the grid", "K");
         connect(calibrate, &QAbstractButton::clicked, this, [this] { props->dismiss(); canvas->setTool(Canvas::Calibrate); });
         v->addWidget(calibrate);
         v->addSpacing(4);
-        v->addWidget(deleteButton("Remover mapa"));
+        v->addWidget(deleteButton("Remove map"));
+    } else if (it->type() == LinkItem::Type) {
+        auto *l = static_cast<LinkItem *>(it);
+        v->addWidget(heading("Link between maps"));
+        v->addWidget(ui::caption("Name"));
+        auto *name = new QLineEdit(l->name);
+        connect(name, &QLineEdit::textChanged, this, [this, l](const QString &n) {
+            for (LinkItem *x : {l, l->partner}) if (x) { x->name = n; x->update(); }
+            setDirty(true);
+        });
+        v->addWidget(name);
+        colorRow(l->color, [l](const QColor &c) { for (LinkItem *x : {l, l->partner}) if (x) { x->color = c; x->update(); } });
+        if (!l->partner) {
+            auto *lonely = new QLabel("This end has no pair yet: drag one with New link (J).");
+            lonely->setWordWrap(true);
+            v->addWidget(lonely);
+        }
+        auto *go = new MenuButton("Go to the other end", "double click");
+        go->setEnabled(l->partner);
+        connect(go, &QAbstractButton::clicked, this, [this, l] { props->dismiss(); canvas->travel(l, l->mapToScene(l->box().center())); });
+        v->addWidget(go);
+        v->addSpacing(4);
+        v->addWidget(deleteButton("Delete link (both ends)"));
     } else if (t) {
-        v->addWidget(heading(t->note ? "Nota" : "Texto"));
+        v->addWidget(heading(t->note ? "Note" : "Text"));
         colorRow(t->color, [t](const QColor &c) { t->setColor(c); });
-        auto *editText = new MenuButton("Editar texto", "duplo clique");
+        auto *editText = new MenuButton("Edit text", "double click");
         connect(editText, &QAbstractButton::clicked, this, [this, t] { props->dismiss(); canvas->setFocus(); t->startEditing(); });
         v->addWidget(editText);
-        v->addWidget(deleteButton(t->note ? "Excluir nota" : "Excluir texto"));
+        v->addWidget(deleteButton(t->note ? "Delete note" : "Delete text"));
     } else if (s) {
-        v->addWidget(heading("Traço"));
+        v->addWidget(heading("Stroke"));
         colorRow(s->pen().color(), [s](const QColor &c) { QPen p = s->pen(); p.setColor(c); s->setPen(p); });
-        v->addWidget(deleteButton("Excluir traço"));
+        v->addWidget(deleteButton("Delete stroke"));
     }
     props->popUp(at + QPoint(2, 2));
 }
@@ -340,7 +375,7 @@ void MainWindow::buildLayersPanel() {
     layersPanel->setFixedSize(310, 380);
     QVBoxLayout *v = layersPanel->body;
     auto *head = new QHBoxLayout;
-    head->addWidget(heading("Camadas"));
+    head->addWidget(heading("Layers"));
     head->addStretch();
     auto *close = new MenuButton("×");
     close->setFixedWidth(30);
@@ -349,7 +384,7 @@ void MainWindow::buildLayersPanel() {
     v->addLayout(head);
     layerList = new QTreeWidget;
     layerList->setColumnCount(3);
-    layerList->setHeaderLabels({"Ver", "Travar", "Nome (ativa em destaque)"});
+    layerList->setHeaderLabels({"Show", "Lock", "Name (active one highlighted)"});
     layerList->setRootIsDecorated(false);
     layerList->setEditTriggers(QAbstractItemView::NoEditTriggers);
     layerList->setFocusPolicy(Qt::NoFocus);
@@ -366,37 +401,38 @@ void MainWindow::buildLayersPanel() {
         row->addWidget(b);
         return b;
     };
-    button("+ Nova", "Nova camada", [this] {
-        canvas->activeLayer = addLayer(QString("Camada %1").arg(layers.size() + 1));
+    button("+ New", "New layer", [this] {
+        canvas->activeLayer = addLayer(QString("Layer %1").arg(layers.size() + 1));
         refreshLayers();
         setDirty(true);
     });
-    button("Excluir", "Excluir a camada ativa e seu conteúdo", [this] {
+    button("Delete", "Delete the active layer and its content", [this] {
         LayerItem *l = canvas->activeLayer;
-        if (!l || layers.size() == 1) return;
+        if (l && l->links) { say("The Links layer stays. Delete its links instead (show them with Shift+J)."); return; }
+        if (!l || layers.size() <= 2) return;
         if (!l->childItems().isEmpty()
-            && QMessageBox::question(this, "Vax Maps", QString("Excluir a camada \"%1\" e %2 itens?").arg(l->name).arg(l->childItems().size()))
+            && QMessageBox::question(this, "Vax Maps", QString("Delete the layer \"%1\" and its %2 items?").arg(l->name).arg(l->childItems().size()))
                    != QMessageBox::Yes)
             return;
         canvas->cancelDrafts();
         layers.removeOne(l);
         delete l;
-        canvas->activeLayer = layers.last();
+        canvas->activeLayer = layers.first();
         restackLayers();
         refreshLayers();
         setDirty(true);
     })->ink = ui::danger;
-    button("↑", "Subir camada", [this] {
-        const int i = layers.indexOf(canvas->activeLayer);
-        if (i < 0 || i == layers.size() - 1) return;
+    button("↑", "Move layer up", [this] {
+        const int i = layers.indexOf(canvas->activeLayer);   // the Links layer stays on top
+        if (i < 0 || i == layers.size() - 1 || layers[i]->links || layers[i + 1]->links) return;
         layers.swapItemsAt(i, i + 1);
         restackLayers();
         refreshLayers();
         setDirty(true);
     });
-    button("↓", "Descer camada", [this] {
+    button("↓", "Move layer down", [this] {
         const int i = layers.indexOf(canvas->activeLayer);
-        if (i <= 0) return;
+        if (i <= 0 || layers[i]->links) return;
         layers.swapItemsAt(i, i - 1);
         restackLayers();
         refreshLayers();
@@ -409,7 +445,8 @@ void MainWindow::buildLayersPanel() {
     connect(layerList, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *ti, int col) {
         if (refreshing) return;
         LayerItem *l = layerOf(ti);
-        if (col == 0) l->setVisible(ti->checkState(0) == Qt::Checked);
+        if (col == 0 && l->links) canvas->showLinks(ti->checkState(0) == Qt::Checked);   // hidden links still answer clicks
+        else if (col == 0) l->setVisible(ti->checkState(0) == Qt::Checked);
         else if (col == 1) l->setLocked(ti->checkState(1) == Qt::Checked);
         else if (col == 2) l->name = ti->text(2);
         setDirty(true);
@@ -432,7 +469,7 @@ void MainWindow::toggleFullScreen() {
     } else {
         wasMaximized = isMaximized();
         showFullScreen();
-        say("Tela cheia. F11 sai.");
+        say("Full screen. F11 leaves it.");
     }
     fullButton->setChecked(isFullScreen());
 }
@@ -469,13 +506,16 @@ bool MainWindow::eventFilter(QObject *o, QEvent *e) {
 
 void MainWindow::setDirty(bool d) {
     dirty = d;
-    setWindowTitle(QString("Vax Maps - %1%2").arg(file.isEmpty() ? "Sem título" : QFileInfo(file).fileName(), d ? " *" : ""));
+    setWindowTitle(QString("Vax Maps - %1%2").arg(file.isEmpty() ? "Untitled" : QFileInfo(file).fileName(), d ? " *" : ""));
 }
 
-LayerItem *MainWindow::addLayer(const QString &name) {
+LayerItem *MainWindow::addLayer(const QString &name, bool links) {
     auto *l = new LayerItem(name);
+    l->links = links;
     scene->addItem(l);
-    layers << l;
+    const bool linksOnTop = !layers.isEmpty() && layers.last()->links;
+    if (linksOnTop && !links) layers.insert(layers.size() - 1, l);   // new layers go under the Links layer
+    else layers << l;
     restackLayers();
     return l;
 }
@@ -493,7 +533,7 @@ void MainWindow::refreshLayers() {
         LayerItem *l = layers[i];
         auto *ti = new QTreeWidgetItem(layerList);
         ti->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable | Qt::ItemIsEditable);
-        ti->setCheckState(0, l->isVisible() ? Qt::Checked : Qt::Unchecked);
+        ti->setCheckState(0, (l->links ? linksVisible : l->isVisible()) ? Qt::Checked : Qt::Unchecked);
         ti->setCheckState(1, l->locked ? Qt::Checked : Qt::Unchecked);
         ti->setText(2, l->name);
         ti->setData(2, Qt::UserRole, QVariant::fromValue(quintptr(l)));
@@ -508,7 +548,7 @@ void MainWindow::refreshLayers() {
 MapItem *MainWindow::importMap(const QString &path, QPointF scenePos) {
     if (!canvas->layerUsable()) return nullptr;
     if (!QImageReader(path).canRead()) {
-        say("Formato de imagem não suportado: " + QFileInfo(path).fileName());
+        say("Unsupported image format: " + QFileInfo(path).fileName());
         return nullptr;
     }
     auto *m = new MapItem(path);
@@ -519,8 +559,8 @@ MapItem *MainWindow::importMap(const QString &path, QPointF scenePos) {
 }
 
 void MainWindow::importDialog() {
-    const QStringList files = QFileDialog::getOpenFileNames(this, "Importar mapas", QString(),
-        "Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.gif);;Todos os arquivos (*)");
+    const QStringList files = QFileDialog::getOpenFileNames(this, "Import maps", QString(),
+        "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.gif);;All files (*)");
     QPointF pos = canvas->mapToScene(canvas->viewport()->rect().center());
     for (const QString &f : files)
         if (MapItem *m = importMap(f, pos)) pos.rx() += m->boundingRect().width() + 100;
@@ -531,7 +571,9 @@ void MainWindow::newProject() {
     props->dismiss();
     qDeleteAll(layers);
     layers.clear();
-    for (const char *name : {"Mapas", "Zonas", "Desenhos", "Textos"}) addLayer(name);
+    for (const char *name : {"Maps", "Zones", "Drawings", "Text"}) addLayer(name);
+    canvas->linksLayer = addLayer("Links", true);
+    canvas->showLinks(false);
     canvas->activeLayer = layers.first();
     canvas->resetTransform();
     canvas->centerOn(0, 0);
@@ -543,20 +585,28 @@ void MainWindow::newProject() {
 bool MainWindow::openProject(const QString &f) {
     QFile in(f);
     if (!in.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, "Vax Maps", "Não foi possível abrir " + f + ": " + in.errorString());
+        QMessageBox::warning(this, "Vax Maps", "Could not open " + f + ": " + in.errorString());
         return false;
     }
     QJsonParseError err;
     const QJsonDocument doc = QJsonDocument::fromJson(in.readAll(), &err);
     if (doc.isNull() || doc.object()["format"].toString() != "vaxmaps") {
-        QMessageBox::warning(this, "Vax Maps", "Arquivo de projeto inválido: " + f);
+        QMessageBox::warning(this, "Vax Maps", "Not a Vax Maps project: " + f);
         return false;
     }
     canvas->setTool(Canvas::Select);   // ends drafts and a calibration in progress
     props->dismiss();
     qDeleteAll(layers);
     layers = layersFromJson(doc.object(), scene, QFileInfo(f).absoluteDir());
-    if (layers.isEmpty()) addLayer("Camada 1");
+    if (layers.isEmpty()) addLayer("Layer 1");
+    canvas->linksLayer = nullptr;
+    for (LayerItem *l : layers)
+        if (l->links) canvas->linksLayer = l;
+    if (!canvas->linksLayer) canvas->linksLayer = addLayer("Links", true);
+    layers.removeOne(canvas->linksLayer);   // always on top
+    layers << canvas->linksLayer;
+    restackLayers();
+    canvas->showLinks(false);
     canvas->activeLayer = layers.first();
     const QJsonObject v = doc.object()["view"].toObject();
     canvas->resetTransform();
@@ -576,7 +626,7 @@ bool MainWindow::saveTo(const QString &f) {
     o["view"] = QJsonObject{{"cx", c.x()}, {"cy", c.y()}, {"zoom", canvas->zoom()}};
     QSaveFile out(f);   // writes to a temp file and renames: a failed save never truncates the old project
     if (!out.open(QIODevice::WriteOnly) || out.write(QJsonDocument(o).toJson(QJsonDocument::Compact)) < 0 || !out.commit()) {
-        QMessageBox::warning(this, "Vax Maps", "Falha ao salvar " + f + ": " + out.errorString());
+        QMessageBox::warning(this, "Vax Maps", "Could not save " + f + ": " + out.errorString());
         return false;
     }
     file = QFileInfo(f).absoluteFilePath();
@@ -587,8 +637,8 @@ bool MainWindow::saveTo(const QString &f) {
 bool MainWindow::save() { return file.isEmpty() ? saveAs() : saveTo(file); }
 
 bool MainWindow::saveAs() {
-    QString f = QFileDialog::getSaveFileName(this, "Salvar projeto", file.isEmpty() ? "mapa.vaxmap" : file,
-                                             "Projeto Vax Maps (*.vaxmap)");
+    QString f = QFileDialog::getSaveFileName(this, "Save project", file.isEmpty() ? "map.vaxmap" : file,
+                                             "Vax Maps project (*.vaxmap)");
     if (f.isEmpty()) return false;
     if (!f.endsWith(".vaxmap", Qt::CaseInsensitive)) f += ".vaxmap";
     return saveTo(f);
@@ -596,13 +646,13 @@ bool MainWindow::saveAs() {
 
 void MainWindow::open() {
     if (!maybeSave()) return;
-    const QString f = QFileDialog::getOpenFileName(this, "Abrir projeto", QString(), "Projeto Vax Maps (*.vaxmap)");
+    const QString f = QFileDialog::getOpenFileName(this, "Open project", QString(), "Vax Maps project (*.vaxmap)");
     if (!f.isEmpty()) openProject(f);
 }
 
 bool MainWindow::maybeSave() {
     if (!dirty) return true;
-    const auto r = QMessageBox::question(this, "Vax Maps", "Salvar as alterações do projeto?",
+    const auto r = QMessageBox::question(this, "Vax Maps", "Save the changes to this project?",
                                          QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
     if (r == QMessageBox::Save) return save();
     return r == QMessageBox::Discard;

@@ -56,7 +56,7 @@ void Panel::paintEvent(QPaintEvent *) {
         p.setBrush(QColor(0, 0, 0, 7));
         p.drawRoundedRect(r.adjusted(-i, -i + 3, i, i + 3), 12 + i, 12 + i);
     }
-    p.setBrush(QColor(29, 30, 35, 246));
+    p.setBrush(QColor(29, 30, 35));
     p.setPen(QPen(QColor(255, 255, 255, 26), 1));
     p.drawRoundedRect(r, 12, 12);
 }
@@ -283,7 +283,7 @@ void Toast::paintEvent(QPaintEvent *) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
     p.setPen(QPen(QColor(255, 255, 255, 22), 1));
-    p.setBrush(QColor(22, 23, 27, 225));
+    p.setBrush(QColor(22, 23, 27));
     const double radius = qMin(12.0, height() / 2.0);
     p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
     p.setPen(ui::text);

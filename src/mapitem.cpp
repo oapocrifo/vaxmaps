@@ -127,29 +127,29 @@ Built buildPyramid(const QString &path, const QString &dir) {
     img.convertTo(opaque(img) ? QImage::Format_RGB32 : QImage::Format_ARGB32_Premultiplied);   // in place: no second full-size copy
     b.size = img.size();
     b.ext = "png";   // lossless: JPEG tiles showed block and colour artifacts at high zoom
-    if (!QDir().mkpath(dir)) { b.error = "não foi possível criar " + dir; return b; }
+    if (!QDir().mkpath(dir)) { b.error = "cannot create " + dir; return b; }
     for (int level = 0;; ++level) {
-        if (quitting) { b.error = "cancelado"; return b; }
+        if (quitting) { b.error = "cancelled"; return b; }
         if (img.width() <= TILE && img.height() <= TILE) {
             b.overview = img;
             b.levels = level + 1;
-            if (!img.save(dir + "/overview.png")) { b.error = "falha ao gravar o cache"; return b; }
+            if (!img.save(dir + "/overview.png")) { b.error = "cannot write the cache"; return b; }
             break;
         }
         for (int ty = 0; ty * TILE < img.height(); ++ty)
             for (int tx = 0; tx * TILE < img.width(); ++tx) {
                 const QRect r = QRect(tx * TILE - 1, ty * TILE - 1, TILE + 2, TILE + 2) & img.rect();
                 const QString f = QString("%1/%2_%3_%4.%5").arg(dir).arg(level).arg(tx).arg(ty).arg(b.ext);
-                if (!img.copy(r).save(f, nullptr, 80)) { b.error = "falha ao gravar o cache"; return b; }   // PNG quality 80 = zlib level 1: fast
+                if (!img.copy(r).save(f, nullptr, 80)) { b.error = "cannot write the cache"; return b; }   // PNG quality 80 = zlib level 1: fast
             }
         img = img.scaled((img.width() + 1) / 2, (img.height() + 1) / 2, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     }
     // meta.json is written last: its presence marks a complete pyramid.
     QSaveFile meta(dir + "/meta.json");
-    if (!meta.open(QIODevice::WriteOnly)) { b.error = "falha ao gravar o cache"; return b; }
+    if (!meta.open(QIODevice::WriteOnly)) { b.error = "cannot write the cache"; return b; }
     meta.write(QJsonDocument(QJsonObject{{"w", b.size.width()}, {"h", b.size.height()},
                                          {"levels", b.levels}, {"ext", b.ext}}).toJson());
-    if (!meta.commit()) b.error = "falha ao gravar o cache";
+    if (!meta.commit()) b.error = "cannot write the cache";
     return b;
 }
 
@@ -182,7 +182,7 @@ QSharedPointer<MapData> MapData::get(const QString &path) {
     auto m = QSharedPointer<MapData>::create();
     m->path = abs;
     registry.insert(abs, m);
-    if (!fi.isFile()) { m->error = "arquivo não encontrado"; return m; }
+    if (!fi.isFile()) { m->error = "file not found"; return m; }
     m->size = QImageReader(abs).size();
     const QByteArray id = (abs + '|' + QString::number(fi.size()) + '|'
                            + QString::number(fi.lastModified().toMSecsSinceEpoch())).toUtf8();
@@ -298,8 +298,8 @@ void MapItem::paint(QPainter *p, const QStyleOptionGraphicsItem *opt, QWidget *w
         p->setFont(f);
         p->setPen(src->error.isEmpty() ? QColor(220, 220, 220) : QColor(255, 120, 120));
         p->drawText(full, Qt::AlignCenter | Qt::TextWordWrap,
-                    src->error.isEmpty() ? QString("Processando mapa…\n%1").arg(QFileInfo(src->path).fileName())
-                                         : QString("Erro: %1\n%2").arg(src->error, src->path));
+                    src->error.isEmpty() ? QString("Preparing map…\n%1").arg(QFileInfo(src->path).fileName())
+                                         : QString("Error: %1\n%2").arg(src->error, src->path));
     } else {
         const int level = levelFor(s, src->levels);
         if (level == src->levels - 1) {
@@ -315,17 +315,7 @@ void MapItem::paint(QPainter *p, const QStyleOptionGraphicsItem *opt, QWidget *w
                     if (!drawTile(p, level, tx, ty, true)) drawFallback(p, level, tx, ty);
         }
         const Calibration *g = preview ? &*preview : (cal.showGrid && cal.valid() ? &cal : nullptr);
-        if (g && g->cellPx * s >= 3) {
-            const QRectF ex = opt->exposedRect & full;
-            const double c = g->cellPx;
-            QVector<QLineF> lines;
-            for (double x = g->origin.x() + std::ceil((ex.left() - g->origin.x()) / c) * c; x <= ex.right(); x += c)
-                lines << QLineF(x, ex.top(), x, ex.bottom());
-            for (double y = g->origin.y() + std::ceil((ex.top() - g->origin.y()) / c) * c; y <= ex.bottom(); y += c)
-                lines << QLineF(ex.left(), y, ex.right(), y);
-            p->setPen(QPen(preview ? QColor(255, 220, 0, 220) : QColor(0, 230, 255, 150), 0));
-            p->drawLines(lines);
-        }
+        if (g) drawGrid(p, *g, opt->exposedRect & full, s, preview ? QColor(255, 220, 0, 230) : QColor(0, 230, 255, 150));
     }
     if (isSelected()) {
         p->setPen(QPen(QColor(80, 160, 255), 0, Qt::DashLine));

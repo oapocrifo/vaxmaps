@@ -1,25 +1,40 @@
 #pragma once
 #include <QGraphicsView>
 #include <QHash>
+#include <QVariantAnimation>
 
+class Calibrator;
+class LabelItem;
 class LayerItem;
+class LinkItem;
 class MapItem;
 class StrokeItem;
 class ZoneItem;
-class LabelItem;
-class Calibrator;
 
 extern bool snapEnabled;
 MapItem *mapAt(QGraphicsScene *s, QPointF scenePos, bool calibratedOnly);
-// Nearest grid intersection of the calibrated map under the point (the point itself if there is none).
-QPointF snapPoint(QGraphicsScene *s, QPointF scenePos);
-// "7,5 m · 5 quadrados" using the calibration of the map under `a`, or pixels when there is none.
+// On the calibrated map under the point: the nearest square corner / hex vertex, or with `centre` the centre of
+// the square or hex. The point itself where no map is calibrated.
+QPointF snapPoint(QGraphicsScene *s, QPointF scenePos, bool centre = false);
+
+// One ruler segment, counted in the squares or hexes of the map under its start.
+struct Span {
+    bool ok = false;   // false: no calibrated map there
+    bool hex = false;
+    int steps = 0;
+    double distance = 0;
+    QString unit;
+};
+Span measureSpan(QGraphicsScene *s, QPointF a, QPointF b);
+QString spanText(const Span &s);                  // "4 squares · 6 m"
+QString totalText(const QVector<Span> &spans);    // sums segments, grouped by grid kind and unit
 QString measureText(QGraphicsScene *s, QPointF a, QPointF b);
 
 class Canvas : public QGraphicsView {
     Q_OBJECT
 public:
-    enum Tool { Select, Pan, Pen, Eraser, Text, Note, Measure, Calibrate, ZoneRect, ZoneEllipse, ZonePoly };
+    // Order matches the menu.
+    enum Tool { Select, Pan, Pen, Eraser, Text, Note, Measure, Calibrate, ZoneRect, ZoneEllipse, ZonePoly, Link };
     explicit Canvas(QGraphicsScene *scene, QWidget *parent = nullptr);
     void setTool(Tool t);
     Tool tool() const { return currentTool; }
@@ -28,8 +43,14 @@ public:
     bool layerUsable();
     void deleteSelected();
     void cancelDrafts();
+    void clearRulers();
+    int rulerCount() const { return int(rulers.size()); }
+    QString rulerText(int i) const;   // what the ruler's last label shows
+    void travel(LinkItem *from, QPointF scenePoint);
+    void showLinks(bool on);
+    bool cameraMoving() const { return camera.state() == QAbstractAnimation::Running; }
 
-    LayerItem *activeLayer = nullptr;
+    LayerItem *activeLayer = nullptr, *linksLayer = nullptr;
     Calibrator *calibrator;
     QColor color = QColor(230, 60, 60);
     double penWidth = 4;   // screen pixels at the zoom the stroke starts
@@ -39,10 +60,11 @@ signals:
     void status(const QString &msg);
     void zoomChanged(double zoom);
     void snapChanged(bool on);
+    void linksShown(bool on);
+    void filesDropped(const QStringList &files, QPointF scenePos);
     // Right click: `selected` is the selected item under the cursor, if any (it gets its properties popup).
     void contextMenuRequested(QPoint viewPos, QGraphicsItem *selected);
     void toggleLayersRequested();
-    void filesDropped(const QStringList &files, QPointF scenePos);
 
 protected:
     void wheelEvent(QWheelEvent *e) override;
@@ -58,20 +80,32 @@ protected:
     void contextMenuEvent(QContextMenuEvent *e) override;
 
 private:
-    QPointF snapped(QPointF p) const;
+    struct Ruler {
+        QVector<QPointF> pts;   // scene coordinates; consecutive points are segments
+        QGraphicsPathItem *line = nullptr;
+        QList<QGraphicsItem *> marks;
+        QString text;
+    };
+    QPointF snapped(QPointF p, bool centre = false) const;
+    bool alive(QGraphicsItem *it) const;
+    LinkItem *linkAt(QPoint viewPos) const;
     void eraseAt(QPointF sp);
-    void updateMeasure(QPointF to);
+    void updateRuler(Ruler &r);
+    void deleteRuler(int i);
     void finishPoly();
+    void finishLink(LinkItem *l);
     void updateCursor();
 
     Tool currentTool = Select;
-    bool panning = false, spaceDown = false, erasing = false, erasedAny = false, measuring = false;
-    QPoint lastPan;
+    bool panning = false, spaceDown = false, erasing = false, erasedAny = false;
+    QPoint lastPan, pressedLinkAt;
     StrokeItem *stroke = nullptr;
     ZoneItem *draft = nullptr;
-    QPointF dragStart, measureFrom;
-    QGraphicsLineItem *measureLine = nullptr;
-    LabelItem *measureLabel = nullptr;
+    QPointF dragStart;
+    QList<Ruler> rulers;
+    int dragRuler = -1;
     QGraphicsEllipseItem *eraserRing = nullptr;
+    LinkItem *pressedLink = nullptr, *hoveredLink = nullptr, *pendingLink = nullptr;
+    QVariantAnimation camera;
     QHash<QGraphicsItem *, QPointF> pressPositions;
 };

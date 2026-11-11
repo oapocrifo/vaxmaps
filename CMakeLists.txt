@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(VaxMaps VERSION 0.3.0 LANGUAGES CXX)
+project(VaxMaps VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,7 @@ qt_add_executable(VaxMaps WIN32
     src/project.cpp src/project.h
     src/calibration.cpp src/calibration.h
     src/ui.cpp src/ui.h
+    src/grid.cpp src/grid.h
     src/selftest.cpp
 )
 target_link_libraries(VaxMaps PRIVATE Qt6::Widgets)

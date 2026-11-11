@@ -2,6 +2,7 @@
 #include <QGraphicsPathItem>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsTextItem>
+#include <QVariantAnimation>
 #include <functional>
 
 // Called after any edit the user makes on the canvas (sets the project's unsaved flag).
@@ -20,6 +21,7 @@ public:
     void applyLock(QGraphicsItem *child) const;
     QString name;
     bool locked = false;
+    bool links = false;   // the layer that holds the links between maps
 };
 
 class StrokeItem : public QGraphicsPathItem {
@@ -112,6 +114,27 @@ private:
     QPointF grab;              // press point minus handle point, so the shape does not jump
     bool moved = false;
 };
+
+// Links: pairs of areas; clicking one moves the camera to the other at the same zoom. They are invisible (but
+// clickable) unless `linksVisible` is on, which is also when they can be selected, resized and deleted.
+extern bool linksVisible;
+
+class LinkItem : public ZoneItem {
+public:
+    enum { Type = UserType + 7 };
+    LinkItem(const QRectF &r, const QColor &color);
+    ~LinkItem() override;
+    int type() const override { return Type; }
+    void paint(QPainter *p, const QStyleOptionGraphicsItem *o, QWidget *w) override;
+    void setHover(bool on);   // invisible links glow under the cursor
+    void syncFlags();         // selectable and movable only while links are shown and the layer is not locked
+    QString id;
+    LinkItem *partner = nullptr;
+private:
+    double glow = 0;
+    QVariantAnimation glowAnim;
+};
+void setLinksVisible(QGraphicsScene *s, bool on);
 
 // Screen-sized label with a dark background (ruler readout, hints).
 class LabelItem : public QGraphicsSimpleTextItem {
