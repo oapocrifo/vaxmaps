@@ -6,6 +6,7 @@
 #include "lang.h"
 #include "mainwindow.h"
 #include "mapitem.h"
+#include "project.h"
 #include "ui.h"
 
 #include <QApplication>
@@ -456,6 +457,45 @@ void additions(MainWindow &w, const QString &dir, const QString &image) {
     drag(c, QPointF(300, 300), QPointF(400, 300), 4);
     w.undo();
     check(c->tool() == Canvas::Pen && countIn<StrokeItem>(w.layers[2]) == 0 && c->activeLayer == w.layers[2], "undo keeps the tool and the active layer");
+    drag(c, QPointF(300, 300), QPointF(400, 300), 4);
+    pause(500);
+    auto *drawn = qgraphicsitem_cast<StrokeItem *>(w.layers[2]->childItems().value(0));
+    if (drawn) {
+        drawn->pts.last() += QPointF(7, 9);   // changed without setPoints: the points kept for undo must not be used
+        sceneEdited();
+        pause(500);
+    }
+    const QVector<QPointF> changed = drawn ? drawn->pts : QVector<QPointF>();
+    c->activeLayer = w.layers[1];
+    c->setTool(Canvas::ZoneRect);
+    drag(c, QPointF(600, 0), QPointF(700, 100));
+    w.undo();
+    drawn = qgraphicsitem_cast<StrokeItem *>(w.layers[2]->childItems().value(0));
+    check(drawn && !changed.isEmpty() && drawn->pts == changed, "undo brings back a stroke's points as they were, also when they changed without setPoints");
+    {
+        auto *link = new LinkItem(QRectF(0, 500, 50, 50), Qt::red), *pair = new LinkItem(QRectF(900, 500, 50, 50), Qt::red);
+        for (LinkItem *l : {link, pair}) l->setParentItem(c->linksLayer);
+        link->partner = pair;
+        pair->partner = link;
+        auto *note = new TextItem(true, Qt::yellow);
+        note->setParentItem(w.layers[3]);
+        note->setPlainText("Trap \"x\"");
+        auto *empty = new StrokeItem(Qt::red, 2);   // no points at all
+        empty->setParentItem(w.layers[2]);
+        const QJsonObject whole = layersToJson(w.layers, QDir::root());
+        check(layersFromParts(layersToParts(w.layers)) == whole && layersFromParts(layersToParts(w.layers)) == whole,
+              "an undo step holds the same project as a save, with every kind of item");
+        const QList<QByteArray> step = layersToParts(w.layers);
+        QGraphicsScene other;
+        const QList<LayerItem *> rebuilt = layersFromJson(layersFromParts(step), &other, QDir::root());
+        reuseParts(rebuilt, step);
+        const QList<QByteArray> again = layersToParts(rebuilt);
+        bool shared = again == step;
+        for (int i = 0; i < again.size(); ++i)
+            if (again[i].startsWith('P')) shared = shared && again[i].constData() == step[i].constData();
+        check(shared, "after an undo the strokes reuse the pieces of the step they came from");
+        w.undo();
+    }
 
     // recovery copy
     QFile::remove(MainWindow::recoveryFile());

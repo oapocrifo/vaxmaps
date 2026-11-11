@@ -5,6 +5,7 @@
 #include <QGraphicsScene>
 #include <QHash>
 #include <QJsonArray>
+#include <QJsonDocument>
 
 namespace {
 
@@ -60,7 +61,7 @@ Calibration calFromJson(const QJsonObject &o, int version) {
     return c;
 }
 
-QJsonObject itemToJson(QGraphicsItem *it, const QDir &base) {
+QJsonObject itemToJson(QGraphicsItem *it, const QDir &base, bool strokePoints = true) {
     QJsonObject o{{"x", it->pos().x()}, {"y", it->pos().y()}};
     if (auto *m = qgraphicsitem_cast<MapItem *>(it)) {
         o["type"] = "map";
@@ -78,7 +79,7 @@ QJsonObject itemToJson(QGraphicsItem *it, const QDir &base) {
         o["type"] = "stroke";
         o["color"] = s->pen().color().name(QColor::HexArgb);
         o["width"] = s->pen().widthF();
-        o["pts"] = pointsToJson(s->pts);
+        if (strokePoints) o["pts"] = pointsToJson(s->pts);
     } else if (auto *t = qgraphicsitem_cast<TextItem *>(it)) {
         if (t->toPlainText().trimmed().isEmpty()) return {};   // just created, nothing typed yet: it deletes itself when the edit ends
         o["type"] = t->note ? "note" : "text";
@@ -158,6 +159,78 @@ QJsonObject layersToJson(const QList<LayerItem *> &layers, const QDir &base) {
         arr << QJsonObject{{"name", l->name}, {"visible", l->isVisible()}, {"locked", l->locked}, {"links", l->links},
                            {"items", itemsToJson(l->childItems(), base)}};
     return QJsonObject{{"format", "vaxmaps"}, {"version", formatVersion}, {"layers", arr}};
+}
+
+QList<QByteArray> layersToParts(const QList<LayerItem *> &layers) {
+    // 'L' + a layer without its items, then its items; 'P' + the points of the stroke just before.
+    QList<QByteArray> parts;
+    for (LayerItem *l : layers) {
+        parts << 'L' + QJsonDocument(QJsonObject{{"name", l->name}, {"visible", l->isVisible()}, {"locked", l->locked}, {"links", l->links}})
+                           .toJson(QJsonDocument::Compact);
+        for (QGraphicsItem *c : l->childItems()) {
+            auto *s = qgraphicsitem_cast<StrokeItem *>(c);
+            if (!s) {
+                if (const QJsonObject o = itemToJson(c, QDir::root()); !o.isEmpty()) parts << QJsonDocument(o).toJson(QJsonDocument::Compact);
+                continue;
+            }
+            if (s->jsonHead.isEmpty() || s->jsonPos != s->pos() || s->jsonPen != s->pen()) {
+                s->jsonPos = s->pos();
+                s->jsonPen = s->pen();
+                s->jsonHead = QJsonDocument(itemToJson(s, QDir::root(), false)).toJson(QJsonDocument::Compact);
+            }
+            parts << s->jsonHead;
+            // Compared, not invalidated by setPoints: pts can also change without it. While nothing changed both share
+            // one buffer and Qt compares the pointers only.
+            if (s->jsonPart.isEmpty() || s->jsonPts != s->pts) {
+                s->jsonPts = s->pts;
+                s->jsonPart = 'P' + QJsonDocument(pointsToJson(s->pts)).toJson(QJsonDocument::Compact);
+            }
+            parts << s->jsonPart;
+        }
+    }
+    return parts;
+}
+
+QJsonObject layersFromParts(const QList<QByteArray> &parts) {
+    QByteArray doc = QByteArray(R"({"format":"vaxmaps","version":)") + QByteArray::number(formatVersion) + R"(,"layers":[)";
+    bool firstLayer = true, firstItem = true;
+    for (const QByteArray &part : parts) {
+        if (part.startsWith('L')) {
+            if (!firstLayer) doc += "]},";
+            doc += part.mid(1).chopped(1) + R"(,"items":[)";   // the layer object, open again for its items
+            firstLayer = false;
+            firstItem = true;
+        } else if (part.startsWith('P')) {
+            doc.chop(1);   // the stroke's closing brace
+            doc += R"(,"pts":)" + part.mid(1) + '}';
+        } else {
+            if (!firstItem) doc += ',';
+            doc += part;
+            firstItem = false;
+        }
+    }
+    if (!firstLayer) doc += "]}";
+    doc += "]}";
+    return QJsonDocument::fromJson(doc).object();
+}
+
+void reuseParts(const QList<LayerItem *> &layers, const QList<QByteArray> &parts) {
+    QList<StrokeItem *> strokes;
+    for (LayerItem *l : layers)
+        for (QGraphicsItem *c : l->childItems())
+            if (auto *s = qgraphicsitem_cast<StrokeItem *>(c)) strokes << s;
+    QList<int> at;   // index of each stroke's points piece; its head is the piece before
+    for (int i = 1; i < parts.size(); ++i)
+        if (parts[i].startsWith('P')) at << i;
+    if (at.size() != strokes.size()) return;   // not the same strokes: they build their pieces again, which is only slower
+    for (int k = 0; k < strokes.size(); ++k) {
+        StrokeItem *s = strokes[k];
+        s->jsonPts = s->pts;
+        s->jsonPart = parts[at[k]];
+        s->jsonPos = s->pos();
+        s->jsonPen = s->pen();
+        s->jsonHead = parts[at[k] - 1];
+    }
 }
 
 QList<LayerItem *> layersFromJson(const QJsonObject &o, QGraphicsScene *scene, const QDir &base) {

@@ -944,11 +944,8 @@ void MainWindow::showRecent() {
 
 // ---- undo ----
 
-// shortcut: a step is the whole project (compressed JSON), not a command. Move to per-command undo
-// if projects reach tens of MB of strokes and a step starts to be felt.
-QByteArray MainWindow::state() const {
-    return qCompress(QJsonDocument(layersToJson(layers, QDir::root())).toJson(QJsonDocument::Compact), 1);
-}
+// A step is the whole project, as pieces shared with the step before where nothing changed (see layersToParts).
+QList<QByteArray> MainWindow::state() const { return layersToParts(layers); }
 
 void MainWindow::resetHistory() {
     undoTimer.stop();
@@ -958,19 +955,20 @@ void MainWindow::resetHistory() {
 
 void MainWindow::snapshot() {
     undoTimer.stop();
-    const QByteArray now = state();
+    const QList<QByteArray> now = state();
     if (now == undoStack.last()) return;   // marked as changed, with nothing different
     undoStack << now;
     redoStack.clear();
     if (undoStack.size() > 100) undoStack.removeFirst();
 }
 
-void MainWindow::restore(const QByteArray &step) {
+void MainWindow::restore(const QList<QByteArray> &step) {
     scene->clearSelection();
     canvas->cancelDrafts();
     if (canvas->tool() == Canvas::Calibrate) canvas->setTool(Canvas::Calibrate);   // the map it was measuring is replaced
     const int active = layers.indexOf(canvas->activeLayer);
-    setLayers(QJsonDocument::fromJson(qUncompress(step)).object(), QDir::root());
+    setLayers(layersFromParts(step), QDir::root());
+    reuseParts(layers, step);
     canvas->activeLayer = layers.value(active, layers.first());
     refreshLayers();
     setDirty(true);

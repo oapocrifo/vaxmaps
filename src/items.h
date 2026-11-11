@@ -2,6 +2,7 @@
 #include <QGraphicsPathItem>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsTextItem>
+#include <QPen>
 #include <QVariantAnimation>
 #include <functional>
 
@@ -32,6 +33,12 @@ public:
     void setPoints(const QVector<QPointF> &p);
     void addPoint(QPointF p);
     QVector<QPointF> pts;   // item coordinates
+    // Undo steps: the stroke as JSON text, and what it was made from. Each part is used only while that still matches.
+    QVector<QPointF> jsonPts;
+    QByteArray jsonPart;   // the points
+    QPointF jsonPos;
+    QPen jsonPen;
+    QByteArray jsonHead;   // the rest: position, colour, width
 };
 
 // Splits a polyline where it passes through the circle (c, r). Returns the pieces left outside it.

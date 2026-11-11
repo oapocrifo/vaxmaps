@@ -91,9 +91,9 @@ private:
     void showFind();
     void setLayers(const QJsonObject &o, const QDir &base);
     QJsonObject toJson(const QDir &base) const;
-    QByteArray state() const;    // the layers and their items: one undo step
+    QList<QByteArray> state() const;   // the layers and their items: one undo step
     void snapshot();
-    void restore(const QByteArray &state);
+    void restore(const QList<QByteArray> &state);
     void resetHistory();
     QList<QGraphicsItem *> selectionInOrder() const;
     void pasteAt(const QByteArray &json, QPointF sceneCentre);
@@ -108,7 +108,7 @@ private:
     QLabel *widthLabel;
     QWidget *propsContent = nullptr;
     QPoint menuAt;               // where the menu was opened: Paste puts the items there
-    QList<QByteArray> undoStack, redoStack;   // compressed states, the last of undoStack is the current one
+    QList<QList<QByteArray>> undoStack, redoStack;   // the last of undoStack is the current state
     QTimer undoTimer, autosaveTimer;
     QLockFile recoveryLock;
 };
