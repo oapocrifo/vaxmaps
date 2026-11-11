@@ -1,6 +1,7 @@
 #include "calibration.h"
 #include "canvas.h"
 #include "items.h"
+#include "lang.h"
 #include "mapitem.h"
 
 #include <QApplication>
@@ -596,7 +597,7 @@ void Calibrator::setText(const QString &s) {
 void Calibrator::start(MapItem *selected) {
     stop();
     popUp(QPoint(6, 6), QPoint(-14, 0));
-    title->setText("Calibrate grid");
+    title->setText(T("Calibrate grid"));
     progress->clear();
     for (MenuButton *b : {applyButton, againButton, detectButton}) b->setEnabled(false);
     applyButton->setChecked(false);
@@ -604,7 +605,7 @@ void Calibrator::start(MapItem *selected) {
     unit->setText("m");
     setHex(false);
     if (selected) choose(selected);
-    else setText("Click the map you want to calibrate.");
+    else setText(T("Click the map you want to calibrate."));
 }
 
 void Calibrator::stop() {
@@ -621,7 +622,7 @@ void Calibrator::stop() {
 
 void Calibrator::choose(MapItem *m) {
     map = m;
-    title->setText("Calibrate grid: " + QFileInfo(m->src->path).fileName());
+    title->setText(T("Calibrate grid") + ": " + QFileInfo(m->src->path).fileName());
     if (m->cal.valid()) {
         perCell->setValue(m->cal.unitsPerCell);
         unit->setText(m->cal.unit);
@@ -636,7 +637,7 @@ void Calibrator::setHex(bool h) {
     hex = h;
     squaresButton->setChecked(!h);
     hexButton->setChecked(h);
-    unitsLabel->setText(h ? "1 hex =" : "1 square =");
+    unitsLabel->setText(T(h ? "1 hex =" : "1 square ="));
     if (map) measureAgain();
 }
 
@@ -687,8 +688,8 @@ void Calibrator::showStep() {
         mark(line);
     }
     const int q = measured();
-    const QString what = hex ? "the centre of a hex" : "a corner of a square";
-    const QString next = hex ? "then the centre of the hex next to it on the right" : "then the next corner to its right";
+    const QString what = T(hex ? "the centre of a hex" : "a corner of a square");
+    const QString next = T(hex ? "then the centre of the hex next to it on the right" : "then the next corner to its right");
     if (q < 4) {
         if (!result) {
             QPainterPath dim;
@@ -712,17 +713,17 @@ void Calibrator::showStep() {
     }
     QString dots;
     for (int i = 0; i < 4; ++i) dots += i < q ? "● " : "○ ";
-    progress->setText(QString("Step %1 of 4   %2").arg(std::min(q + 1, 4)).arg(dots.trimmed()));
+    progress->setText(T("Step %1 of 4   %2").arg(std::min(q + 1, 4)).arg(dots.trimmed()));
     if (pointA) return;
     if (!result) {
-        setText(q == 0 ? QString("Click %1 in the highlighted quarter, %2. Zoom in for precision.").arg(what, next)
-                       : QString("The map's lines did not confirm the grid yet. Measure again in the highlighted quarter: %1, %2.").arg(what, next));
+        setText(q == 0 ? T("Click %1 in the highlighted quarter, %2. Zoom in for precision.").arg(what, next)
+                       : T("The map's lines did not confirm the grid yet. Measure again in the highlighted quarter: %1, %2.").arg(what, next));
     } else if (q < 4) {
-        setText(QString("Grid %1: cell of %2 px.\nCheck the yellow grid. Enter applies it. To refine, measure %3 in the outlined quarter, %4. "
-                        "Arrows move the grid (Shift: 0.1 px).")
+        setText(T("Grid %1: cell of %2 px.\nCheck the yellow grid. Enter applies it. To refine, measure %3 in the outlined quarter, %4. "
+                  "Arrows move the grid (Shift: 0.1 px).")
                     .arg(how).arg(result->cellSize(), 0, 'f', 2).arg(what, next));
     } else {
-        setText(QString("Grid %1: cell of %2 px.\nAll 4 steps done. Enter applies it. Arrows move the grid (Shift: 0.1 px).")
+        setText(T("Grid %1: cell of %2 px.\nAll 4 steps done. Enter applies it. Arrows move the grid (Shift: 0.1 px).")
                     .arg(how).arg(result->cellSize(), 0, 'f', 2));
     }
 }
@@ -738,7 +739,7 @@ void Calibrator::mousePress(QPointF sp) {
     if (!pointA) {
         const QRectF q = quarter(measured());
         if (!q.adjusted(-q.width() * 0.1, -q.height() * 0.1, q.width() * 0.1, q.height() * 0.1).contains(p)) {
-            setText("Click inside the highlighted quarter of the map.");
+            setText(T("Click inside the highlighted quarter of the map."));
             return;
         }
         pointA = p;
@@ -749,7 +750,7 @@ void Calibrator::mousePress(QPointF sp) {
         c->setFlag(QGraphicsItem::ItemIgnoresTransformations);
         c->setPos(p);
         mark(c);
-        setText(hex ? "Now the centre of the hex next to it on the right." : "Now the next corner to its right, on the same line.");
+        setText(T(hex ? "Now the centre of the hex next to it on the right." : "Now the next corner to its right, on the same line."));
         return;
     }
     if (!hex) p.setY(pointA->y());   // Atlas: the second corner is on the first one's row
@@ -765,7 +766,7 @@ void Calibrator::evaluate() {
     const auto a = analysisCache.value(map->src->path);
     if (!a) {   // never blocks: the measurement is shown now and refined when the lines are read
         waitingAnalysis = true;
-        setResult(measuredGrid, false, "from your measurement (still reading the map's lines…)");
+        setResult(measuredGrid, false, T("from your measurement (still reading the map's lines…)"));
         return;
     }
     waitingAnalysis = false;
@@ -775,10 +776,10 @@ void Calibrator::evaluate() {
         for (const Measurement &m : measurements)
             for (QPointF c : {m.a, m.b}) onClicks = onClicks && nearLattice(fit->cal, c);
     if (onClicks)
-        setResult(fit->cal, true, fit->regions ? QString("matched to the map's lines, following them in %1 regions").arg(fit->regions)
-                                               : QString("matched to the map's lines"));
+        setResult(fit->cal, true, fit->regions ? T("matched to the map's lines, following them in %1 regions").arg(fit->regions)
+                                               : T("matched to the map's lines"));
     else if (measured() >= 4)
-        setResult(measuredGrid, false, "from the mean of your 4 measurements (the map's lines did not confirm it)");
+        setResult(measuredGrid, false, T("from the mean of your 4 measurements (the map's lines did not confirm it)"));
     else {
         result.reset();
         matched = false;
@@ -806,7 +807,7 @@ void Calibrator::setResult(const Calibration &c, bool fromLines, const QString &
     squaresButton->setChecked(!c.isHex());
     hexButton->setChecked(c.isHex());
     hex = c.isHex();
-    unitsLabel->setText(hex ? "1 hex =" : "1 square =");
+    unitsLabel->setText(T(hex ? "1 hex =" : "1 square ="));
     showStep();
 }
 
@@ -815,7 +816,7 @@ void Calibrator::autoDetect() {
     reset();
     detecting = true;
     progress->clear();
-    setText("Looking for squares or hexes over the whole map…");
+    setText(T("Looking for squares or hexes over the whole map…"));
     if (analysisCache.contains(map->src->path)) runDetection();   // else analysisReady() starts it
 }
 
@@ -830,11 +831,11 @@ void Calibrator::runDetection() {
             self->detecting = false;
             if (g) {
                 self->measurements.clear();
-                self->setResult(g->cal, true, QString("of %1 found automatically%2").arg(g->cal.isHex() ? "hexes" : "squares")
-                                                  .arg(g->regions ? QString(", following the lines in %1 regions").arg(g->regions) : QString()));
+                self->setResult(g->cal, true, T("of %1 found automatically%2").arg(T(g->cal.isHex() ? "hexes" : "squares"))
+                                                  .arg(g->regions ? T(", following the lines in %1 regions").arg(g->regions) : QString()));
             } else {
                 self->showStep();
-                self->setText("No grid found in the map's lines. Measure it: click a corner of a square (or a hex centre) in the highlighted quarter.");
+                self->setText(T("No grid found in the map's lines. Measure it: click a corner of a square (or a hex centre) in the highlighted quarter."));
             }
         }, Qt::QueuedConnection);
     });
@@ -852,8 +853,8 @@ void Calibrator::apply() {
     result.reset();
     sceneEdited();
     emit canvas->scene()->selectionChanged();   // refreshes a properties popup showing this map
-    const QString msg = QString("Map calibrated: 1 %1 = %2 px = %3 %4.")
-                            .arg(c.noun(1)).arg(c.cellSize(), 0, 'f', 2).arg(c.unitsPerCell).arg(c.unit);
+    const QString msg = T("Map calibrated: 1 %1 = %2 px = %3 %4.")
+                            .arg(T(c.noun(1))).arg(c.cellSize(), 0, 'f', 2).arg(c.unitsPerCell).arg(c.unit);
     canvas->setTool(Canvas::Select);
     emit canvas->status(msg);
 }

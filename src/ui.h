@@ -2,6 +2,7 @@
 // Minimal overlay UI: floating panels with enter/exit animations, buttons with animated hover and press,
 // colour swatches and fading notices. All of them are child widgets drawn over the canvas.
 #include <QAbstractButton>
+#include <QLabel>
 #include <QPointer>
 #include <QVariantAnimation>
 #include <QWidget>
@@ -15,8 +16,19 @@ const QColor text(232, 232, 236), muted(146, 148, 156), accent(92, 140, 255), da
 constexpr int shadow = 10;   // px of drop shadow around a panel
 // Animates `target` towards `to` over `ms`, starting from wherever it is now.
 void glide(QVariantAnimation &a, double from, double to, int ms);
-QWidget *caption(const QString &text);   // small section title
+QWidget *caption(const QString &english);   // small section title
 } // namespace ui
+
+// A label whose text follows the interface language.
+class Label : public QLabel {
+public:
+    explicit Label(const QString &english, bool upper = false);
+protected:
+    void changeEvent(QEvent *e) override;
+private:
+    QString key;
+    bool upper;
+};
 
 class Panel : public QWidget {
     Q_OBJECT
@@ -42,21 +54,26 @@ private:
     bool shown = false;
 };
 
+// The text is English and is shown in the interface language (see lang.h), unless `literal` is set.
 class MenuButton : public QAbstractButton {
     Q_OBJECT
 public:
     explicit MenuButton(const QString &text, const QString &hint = {}, QWidget *parent = nullptr);
     QSize sizeHint() const override;
+    void setTip(const QString &english);
     QColor tint = ui::accent;   // background when checked
     QColor ink = ui::text;      // label colour (ui::danger for destructive actions)
+    bool literal = false;       // a file or item name: shown as it is
 protected:
     void paintEvent(QPaintEvent *) override;
+    void changeEvent(QEvent *e) override;
     void enterEvent(QEnterEvent *) override;
     void leaveEvent(QEvent *) override;
     void mousePressEvent(QMouseEvent *e) override;
     void mouseReleaseEvent(QMouseEvent *e) override;
 private:
-    QString hint;
+    QString label() const;
+    QString hint, tip;
     double hover = 0, press = 0, check = 0;
     QVariantAnimation hoverA, pressA, checkA;
 };

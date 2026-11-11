@@ -1,17 +1,26 @@
 #include "mainwindow.h"
+#include "lang.h"
 #include "mapitem.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QImageReader>
+#include <QLocale>
 #include <QPalette>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QStyleFactory>
 
 int runSelfTest(const QStringList &args);
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
-    QApplication::setApplicationName("Vax Maps");
+    const bool selfTest = app.arguments().contains("--selftest");
+    // The self-test gets its own cache, settings and recovery copy: it never touches the user's.
+    QApplication::setApplicationName(selfTest ? "Vax Maps selftest" : "Vax Maps");
     QApplication::setOrganizationName("VaxMaps");
+    const QString language = QSettings().value("language").toString();   // first run: the system's language
+    setPortuguese(!selfTest && (language.isEmpty() ? QLocale::system().language() == QLocale::Portuguese : language == "pt"));
     QImageReader::setAllocationLimit(0);   // battle maps often exceed Qt's 256 MB decode limit
 
     app.setStyle(QStyleFactory::create("Fusion"));
@@ -33,15 +42,22 @@ int main(int argc, char **argv) {
     app.setPalette(p);
 
     int rc;
-    if (app.arguments().contains("--selftest")) {
+    if (selfTest) {
         rc = runSelfTest(app.arguments());
     } else {
         MainWindow w;
         w.show();
         const QStringList args = app.arguments();
-        if (args.size() > 1 && args[1].endsWith(".vaxmap", Qt::CaseInsensitive)) w.openProject(args[1]);
+        if (!w.offerRecovery() && args.size() > 1 && args[1].endsWith(".vaxmap", Qt::CaseInsensitive)) w.openFromUi(args[1]);
         rc = app.exec();
     }
     MapData::shutdown();
+    if (selfTest) {   // leaves nothing behind
+        for (auto where : {QStandardPaths::CacheLocation, QStandardPaths::AppLocalDataLocation}) {
+            const QString dir = QStandardPaths::writableLocation(where);
+            if (dir.endsWith("Vax Maps selftest") || dir.endsWith("Vax Maps selftest/cache")) QDir(dir).removeRecursively();   // never anything else
+        }
+        QSettings().clear();
+    }
     return rc;
 }

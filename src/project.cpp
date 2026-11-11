@@ -21,6 +21,7 @@ QVector<QPointF> pointsFromJson(const QJsonArray &a) {
 }
 
 const char *gridNames[] = {"square", "hexPointy", "hexFlat"};
+const int formatVersion = 3;
 
 QJsonObject calToJson(const Calibration &c) {
     QJsonObject o{{"type", gridNames[c.grid]}, {"ox", c.origin.x()}, {"oy", c.origin.y()}, {"ax", c.a.x()}, {"ay", c.a.y()},
@@ -137,15 +138,26 @@ QGraphicsItem *itemFromJson(const QJsonObject &o, const QDir &base, int version)
 
 } // namespace
 
+QJsonArray itemsToJson(const QList<QGraphicsItem *> &items, const QDir &base) {
+    QJsonArray a;
+    for (QGraphicsItem *it : items)
+        if (QJsonObject o = itemToJson(it, base); !o.isEmpty()) a << o;
+    return a;
+}
+
+QList<QGraphicsItem *> itemsFromJson(const QJsonArray &a, const QDir &base) {
+    QList<QGraphicsItem *> items;
+    for (const QJsonValue &v : a)
+        if (QGraphicsItem *it = itemFromJson(v.toObject(), base, formatVersion)) items << it;
+    return items;
+}
+
 QJsonObject layersToJson(const QList<LayerItem *> &layers, const QDir &base) {
     QJsonArray arr;
-    for (LayerItem *l : layers) {
-        QJsonArray items;
-        for (QGraphicsItem *c : l->childItems())   // children come back in stacking order
-            if (QJsonObject o = itemToJson(c, base); !o.isEmpty()) items << o;
-        arr << QJsonObject{{"name", l->name}, {"visible", l->isVisible()}, {"locked", l->locked}, {"links", l->links}, {"items", items}};
-    }
-    return QJsonObject{{"format", "vaxmaps"}, {"version", 3}, {"layers", arr}};
+    for (LayerItem *l : layers)   // children come back in stacking order
+        arr << QJsonObject{{"name", l->name}, {"visible", l->isVisible()}, {"locked", l->locked}, {"links", l->links},
+                           {"items", itemsToJson(l->childItems(), base)}};
+    return QJsonObject{{"format", "vaxmaps"}, {"version", formatVersion}, {"layers", arr}};
 }
 
 QList<LayerItem *> layersFromJson(const QJsonObject &o, QGraphicsScene *scene, const QDir &base) {

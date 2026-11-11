@@ -1,6 +1,7 @@
 #include "canvas.h"
 #include "calibration.h"
 #include "items.h"
+#include "lang.h"
 #include "mapitem.h"
 
 #include <QContextMenuEvent>
@@ -21,25 +22,25 @@ QString fmt(double v) {
     QString s = QString::number(v, 'f', 2);
     while (s.endsWith('0')) s.chop(1);
     if (s.endsWith('.')) s.chop(1);
-    return s;
+    return portuguese() ? s.replace('.', ',') : s;
 }
 
-const char *toolHint(Canvas::Tool t) {
+QString toolHint(Canvas::Tool t) {
     switch (t) {
-    case Canvas::Select: return "Select: click or drag to select, drag to move. Del deletes. Lock the maps layer so maps don't move by accident.";
-    case Canvas::Pan: return "Pan: drag. The middle button or Space + drag also pan.";
-    case Canvas::Pen: return "Pen: drag to draw.";
-    case Canvas::Eraser: return "Eraser: drag over strokes.";
-    case Canvas::Text: return "Text: click to type. Double click edits existing text.";
-    case Canvas::Note: return "Note: click to place a note.";
-    case Canvas::Measure: return "Ruler: drag to measure. Drag again from a ruler's end to add a turn, or elsewhere for another ruler. Esc clears them.";
-    case Canvas::Calibrate: return "Calibrate: follow the panel. Esc cancels.";
-    case Canvas::ZoneRect: return "Rectangle zone: drag. Shift keeps it square.";
-    case Canvas::ZoneEllipse: return "Circle zone: drag. Shift keeps it round.";
-    case Canvas::ZonePoly: return "Vertex zone: click each vertex. Double click, Enter or a click on the first vertex closes it.";
-    case Canvas::Link: return "Link: drag an area, then drag its pair (it can be on another map).";
+    case Canvas::Select: return T("Select: click or drag to select, drag to move. Del deletes. Lock the maps layer so maps don't move by accident.");
+    case Canvas::Pan: return T("Pan: drag. The middle button or Space + drag also pan.");
+    case Canvas::Pen: return T("Pen: drag to draw.");
+    case Canvas::Eraser: return T("Eraser: drag over strokes.");
+    case Canvas::Text: return T("Text: click to type. Double click edits existing text.");
+    case Canvas::Note: return T("Note: click to place a note.");
+    case Canvas::Measure: return T("Ruler: drag to measure. Drag again from a ruler's end to add a turn, or elsewhere for another ruler. Esc clears them.");
+    case Canvas::Calibrate: return T("Calibrate: follow the panel. Esc cancels.");
+    case Canvas::ZoneRect: return T("Rectangle zone: drag. Shift keeps it square.");
+    case Canvas::ZoneEllipse: return T("Circle zone: drag. Shift keeps it round.");
+    case Canvas::ZonePoly: return T("Vertex zone: click each vertex. Double click, Enter or a click on the first vertex closes it.");
+    case Canvas::Link: return T("Link: drag an area, then drag its pair (it can be on another map).");
     }
-    return "";
+    return {};
 }
 
 const QColor linkColours[] = {QColor(60, 200, 255), QColor(255, 150, 40), QColor(170, 110, 255), QColor(80, 220, 120), QColor(255, 90, 160)};
@@ -74,8 +75,8 @@ Span measureSpan(QGraphicsScene *s, QPointF a, QPointF b) {
 }
 
 QString spanText(const Span &s) {
-    if (!s.ok) return "Map not calibrated (K)";
-    const QString noun = s.hex ? (s.steps == 1 ? "hex" : "hexes") : (s.steps == 1 ? "square" : "squares");
+    if (!s.ok) return T("Map not calibrated (K)");
+    const QString noun = T(s.hex ? (s.steps == 1 ? "hex" : "hexes") : (s.steps == 1 ? "square" : "squares"));
     return QString("%1 %2 · %3 %4").arg(s.steps).arg(noun, fmt(s.distance), s.unit);
 }
 
@@ -163,11 +164,11 @@ void Canvas::cancelDrafts() {
 
 bool Canvas::layerUsable() {
     if (activeLayer && activeLayer->links) {
-        emit status("The Links layer only holds links. Pick another layer in the Layers panel (L).");
+        emit status(T("The Links layer only holds links. Pick another layer in the Layers panel (L)."));
         return false;
     }
     if (activeLayer && activeLayer->isVisible() && !activeLayer->locked) return true;
-    emit status("The active layer is hidden or locked. Pick another one in the Layers panel (L).");
+    emit status(T("The active layer is hidden or locked. Pick another one in the Layers panel (L)."));
     return false;
 }
 
@@ -292,7 +293,7 @@ void Canvas::mousePressEvent(QMouseEvent *e) {
     case ZoneEllipse:
     case Link:
         if (currentTool == Link) {
-            if (!linksLayer || linksLayer->locked) { emit status("The Links layer is locked."); return; }
+            if (!linksLayer || linksLayer->locked) { emit status(T("The Links layer is locked.")); return; }
         } else if (!layerUsable()) return;
         dragStart = snapped(sp);
         if (currentTool == Link) {
@@ -429,12 +430,12 @@ void Canvas::finishLink(LinkItem *l) {
         setTool(Select);
         scene()->clearSelection();
         l->setSelected(true);
-        emit status("Linked. With links hidden (Shift+J), a click on either area moves the view to the other.");
+        emit status(T("Linked. With links hidden (Shift+J), a click on either area moves the view to the other."));
     } else {
         int n = 0;
         for (QGraphicsItem *it : linksLayer->childItems()) n += it->type() == LinkItem::Type;
-        l->name = QString("Link %1").arg((n + 1) / 2);
-        emit status("Now drag its pair. It can be on another map: pan and zoom first if needed.");
+        l->name = T("Link %1").arg((n + 1) / 2);
+        emit status(T("Now drag its pair. It can be on another map: pan and zoom first if needed."));
     }
     sceneEdited();
 }
@@ -448,19 +449,22 @@ void Canvas::mouseDoubleClickEvent(QMouseEvent *e) {
 
 void Canvas::travel(LinkItem *from, QPointF click) {
     LinkItem *to = from->partner;
-    if (!to) { emit status("This link has no pair yet: drag one with the Link tool (J)."); return; }
+    if (!to) { emit status(T("This link has no pair yet: drag one with the Link tool (J).")); return; }
     // The clicked spot lands on the matching spot of the pair, at the same place on screen and the same zoom.
     const QRectF a = from->mapRectToScene(from->box()), b = to->mapRectToScene(to->box());
     // a link without area (old projects have them: a click used to make one) sends its centre
     const QPointF rel(a.width() > 0 ? (click.x() - a.left()) / a.width() : 0.5, a.height() > 0 ? (click.y() - a.top()) / a.height() : 0.5);
     const QPointF target(b.left() + rel.x() * b.width(), b.top() + rel.y() * b.height());
-    const QPointF centre = mapToScene(viewport()->rect().center());
+    glideTo(mapToScene(viewport()->rect().center()) + (target - click));
+    emit status(to->name.isEmpty() ? T("Moved to the linked area.") : "→ " + to->name);
+}
+
+void Canvas::glideTo(QPointF sceneCentre) {
     camera.stop();
-    camera.setStartValue(centre);
-    camera.setEndValue(centre + (target - click));
+    camera.setStartValue(mapToScene(viewport()->rect().center()));
+    camera.setEndValue(sceneCentre);
     camera.setDuration(650);
     camera.start();
-    emit status(to->name.isEmpty() ? QString("Moved to the linked area.") : "→ " + to->name);
 }
 
 void Canvas::finishPoly() {
@@ -520,7 +524,7 @@ void Canvas::updateRuler(Ruler &r) {
         scene()->addItem(turn);
         r.marks << turn;
     }
-    r.text = spans.size() > 1 ? "Total: " + totalText(spans) : spanText(spans[0]);
+    r.text = spans.size() > 1 ? T("Total: ") + totalText(spans) : spanText(spans[0]);
     auto *end = new LabelItem;
     end->setText(r.text);
     end->setPos(r.pts.last());
@@ -564,7 +568,7 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
     if (currentTool == Calibrate && calibrator->key(e)) return;
     if (e->key() == Qt::Key_J && (e->modifiers() & Qt::ShiftModifier)) {
         showLinks(!linksVisible);
-        emit status(linksVisible ? "Links shown: select, resize or delete them. Double click one to jump." : "Links hidden: click one to jump to its pair.");
+        emit status(T(linksVisible ? "Links shown: select, resize or delete them. Double click one to jump." : "Links hidden: click one to jump to its pair."));
         return;
     }
     // Tool letters live here instead of QAction shortcuts so typing in a text item never switches tools.
@@ -579,7 +583,7 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
     case Qt::Key_S:
         snapEnabled = !snapEnabled;
         emit snapChanged(snapEnabled);
-        emit status(snapEnabled ? "Snap to grid on: zone points stick to corners, ruler points to cell centres." : "Snap to grid off.");
+        emit status(T(snapEnabled ? "Snap to grid on: zone points stick to corners, ruler points to cell centres." : "Snap to grid off."));
         return;
     case Qt::Key_Space:
         if (!e->isAutoRepeat()) { spaceDown = true; updateCursor(); }
@@ -597,6 +601,18 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
     case Qt::Key_Enter:
         if (draft && draft->shapeKind == ZoneItem::Poly) finishPoly();
         return;
+    case Qt::Key_Left:
+    case Qt::Key_Right:
+    case Qt::Key_Up:
+    case Qt::Key_Down: {   // move the selection by screen pixels; with nothing selected the arrows scroll the view
+        const QList<QGraphicsItem *> sel = scene()->selectedItems();
+        if (sel.isEmpty()) break;
+        const double d = ((e->modifiers() & Qt::ShiftModifier) ? 10 : 1) / zoom();
+        const int k = e->key();
+        for (QGraphicsItem *i : sel) i->moveBy(k == Qt::Key_Left ? -d : k == Qt::Key_Right ? d : 0, k == Qt::Key_Up ? -d : k == Qt::Key_Down ? d : 0);
+        sceneEdited();
+        return;
+    }
     }
     QGraphicsView::keyPressEvent(e);
 }

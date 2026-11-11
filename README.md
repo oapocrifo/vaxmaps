@@ -57,6 +57,23 @@ Linux: `cmake -S . -B build && cmake --build build`.
 Tests: `VaxMaps --selftest <folder> [--bench]` (on Linux without a screen: `QT_QPA_PLATFORM=offscreen`).
 The distributed `.exe` is cross-built on Linux with static Qt 6.4.2 and MinGW: see `tools/`.
 
+## New in 0.5
+
+- **Undo and redo**: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z), 100 steps. Every edit counts, a deleted map comes back with its calibration. Edits less than 0.4 s apart are one step.
+- **Recovery copy**: while there are unsaved changes the project is copied every minute to `recovery.vaxmap` in the program's data folder. After a crash or a power cut the next start offers to restore it. Saving, discarding or closing normally removes the copy.
+- **Missing images**: a project whose images moved asks for the first one when it is opened and finds the others in the same folder. Later: right click the selected map, **Locate image…**.
+- **Clear cache** (menu, Project): deletes the tile cache of the maps not opened since the program started. Use it with a single window of the program open.
+- **Text size**: slider in the properties of a text or note.
+- **Copy, paste, duplicate**: Ctrl+C, Ctrl+V (at the pointer), Ctrl+D, for zones, texts, notes, strokes and maps (with their calibration). Links are not copied.
+- **Arrows** move the selection 1 px on screen, 10 px with Shift. With nothing selected they scroll the view, as before.
+- **Several maps imported at once** land in rows and columns instead of one long row.
+- **Open recent…** (menu): the last 5 projects.
+- **Find…** (Ctrl+F): type part of the name of a zone or link, Enter or a click moves the view there.
+- **Export view…** (Ctrl+E): the visible canvas as PNG or JPEG, at screen resolution, without selection marks.
+- **Portuguese**: the interface follows the system language at the first start. The **Português / English** button in the menu switches it. Number fields use the decimal comma in Portuguese.
+- On a window lower than the menu, the mouse wheel over the menu scrolls it.
+- Fixed: the properties popup opened again at once (a second right click on the item) came out empty.
+
 ## Changes in 0.4.1
 
 Bug fixes, no new features. Projects from 0.4 open unchanged.

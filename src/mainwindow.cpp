@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "canvas.h"
 #include "items.h"
+#include "lang.h"
 #include "mapitem.h"
 #include "project.h"
 #include "ui.h"
@@ -8,6 +9,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QButtonGroup>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -21,11 +23,16 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QSaveFile>
+#include <QSettings>
 #include <QSlider>
+#include <QStandardPaths>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <cmath>
 
 namespace {
 
@@ -54,8 +61,7 @@ Panel QScrollBar::handle:vertical { background: rgba(255,255,255,40); border-rad
 Panel QScrollBar::add-line, Panel QScrollBar::sub-line { height: 0; }
 )";
 
-QLabel *heading(const QString &t) {
-    auto *l = new QLabel(t);
+QLabel *heading(QLabel *l) {
     QFont f = l->font();
     f.setPixelSize(14);
     f.setBold(true);
@@ -63,9 +69,41 @@ QLabel *heading(const QString &t) {
     return l;
 }
 
+const char *clipboardFormat = "application/x-vaxmaps-items";
+
+QString imageFilter() { return T("Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.gif);;All files (*)"); }
+
+bool writeJson(const QString &f, const QJsonObject &o, QString *error = nullptr) {
+    QSaveFile out(f);   // writes to a temp file and renames: a failed save never truncates the old project
+    const bool ok = out.open(QIODevice::WriteOnly) && out.write(QJsonDocument(o).toJson(QJsonDocument::Compact)) >= 0 && out.commit();
+    if (!ok && error) *error = out.errorString();
+    return ok;
+}
+
+template <class Fn> void eachMap(const QList<LayerItem *> &layers, Fn fn) {
+    for (LayerItem *l : layers)
+        for (QGraphicsItem *c : l->childItems())
+            if (auto *m = qgraphicsitem_cast<MapItem *>(c)) fn(m);
+}
+
+bool imageMissing(const MapItem *m) { return !QFileInfo(m->src->path).isFile(); }
+
+void addRecent(const QString &f) {
+    QSettings settings;
+    QStringList recent = settings.value("recent").toStringList();
+    recent.removeAll(f);
+    recent.prepend(f);
+    settings.setValue("recent", recent.mid(0, 5));
+}
+
+QByteArray clipboardItems() {
+    const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
+    return mime ? mime->data(clipboardFormat) : QByteArray();
+}
+
 } // namespace
 
-MainWindow::MainWindow() {
+MainWindow::MainWindow() : recoveryLock(recoveryFile() + ".lock") {
     scene = new QGraphicsScene(this);
     // "Infinite": ±5 million px stays inside the scrollbars' int range even at 64x zoom.
     scene->setSceneRect(-5e6, -5e6, 1e7, 1e7);
@@ -95,15 +133,24 @@ MainWindow::MainWindow() {
     // Queued: this may ask to save, and a dialog shown inside the drop freezes the window the files came from.
     connect(canvas, &Canvas::filesDropped, this, [this](const QStringList &files, QPointF pos) {
         for (const QString &f : files)
-            if (f.endsWith(".vaxmap", Qt::CaseInsensitive)) { if (maybeSave()) openProject(f); return; }
-        for (const QString &f : files)
-            if (MapItem *m = importMap(f, pos)) pos.rx() += m->boundingRect().width() + 100;
+            if (f.endsWith(".vaxmap", Qt::CaseInsensitive)) { if (maybeSave()) openFromUi(f); return; }
+        importMaps(files, pos);
     }, Qt::QueuedConnection);
     qApp->installEventFilter(this);   // closes popups on outside clicks and Esc, keeps overlays placed
 
+    undoTimer.setSingleShot(true);
+    undoTimer.setInterval(400);   // edits in a row (typing a name, dragging a slider) are one undo step
+    connect(&undoTimer, &QTimer::timeout, this, [this] {
+        if (QGuiApplication::mouseButtons()) undoTimer.start();   // not half way through a drag
+        else snapshot();
+    });
+    autosaveTimer.setInterval(60000);
+    connect(&autosaveTimer, &QTimer::timeout, this, &MainWindow::autosave);
+    autosaveTimer.start();
+
     newProject();
     resize(1500, 950);
-    say("Right click opens the menu. L shows the layers, F11 toggles full screen.");
+    say(T("Right click opens the menu. L shows the layers, F11 toggles full screen."));
 }
 
 MainWindow::~MainWindow() {
@@ -203,6 +250,7 @@ void MainWindow::buildMenu() {
                         canvas->centerOn(c);
                         emit canvas->zoomChanged(1);
                     })), 1, 1);
+    grid->addWidget(menuButton(action("Find…", QKeySequence("Ctrl+F"), [this] { showFind(); })), 1, 2);
     action("Zoom in", QKeySequence::ZoomIn, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(1.25); });
     action("Zoom out", QKeySequence::ZoomOut, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(0.8); });
     v->addLayout(grid);
@@ -210,26 +258,55 @@ void MainWindow::buildMenu() {
     v->addWidget(ui::caption("Project"));
     grid = new QGridLayout;
     grid->setSpacing(3);
-    grid->addWidget(menuButton(action("New", QKeySequence::New, [this] { if (maybeSave()) newProject(); })), 0, 0);
-    grid->addWidget(menuButton(action("Open…", QKeySequence::Open, [this] { open(); })), 0, 1);
-    grid->addWidget(menuButton(action("Save", QKeySequence::Save, [this] { save(); })), 1, 0);
-    grid->addWidget(menuButton(action("Save as…", QKeySequence("Ctrl+Shift+S"), [this] { saveAs(); })), 1, 1);
-    grid->addWidget(menuButton(action("Import maps…", QKeySequence("Ctrl+I"), [this] { importDialog(); })), 2, 0);
-    grid->addWidget(menuButton(action("Quit", QKeySequence("Ctrl+Q"), [this] { close(); })), 2, 1);
+    auto plain = [this](const QString &text, std::function<void()> fn) {   // a command without a shortcut
+        auto *b = new MenuButton(text, " ");   // the empty hint aligns the text left, like its neighbours
+        connect(b, &QAbstractButton::clicked, this, [this, fn] { menu->dismiss(); fn(); });
+        return b;
+    };
+    // six columns: rows of three buttons span two each, rows of two span three
+    for (int i = 0; i < 6; ++i) grid->setColumnStretch(i, 1);
+    grid->addWidget(menuButton(action("New", QKeySequence::New, [this] { if (maybeSave()) newProject(); })), 0, 0, 1, 2);
+    grid->addWidget(menuButton(action("Open…", QKeySequence::Open, [this] { open(); })), 0, 2, 1, 2);
+    grid->addWidget(plain("Open recent…", [this] { showRecent(); }), 0, 4, 1, 2);
+    grid->addWidget(menuButton(action("Save", QKeySequence::Save, [this] { save(); })), 1, 0, 1, 3);
+    grid->addWidget(menuButton(action("Save as…", QKeySequence("Ctrl+Shift+S"), [this] { saveAs(); })), 1, 3, 1, 3);
+    grid->addWidget(menuButton(action("Import maps…", QKeySequence("Ctrl+I"), [this] { importDialog(); })), 2, 0, 1, 3);
+    grid->addWidget(menuButton(action("Export view…", QKeySequence("Ctrl+E"), [this] { exportDialog(); })), 2, 3, 1, 3);
+    MenuButton *clear = plain("Clear cache", [this] { clearCache(); });
+    clear->setTip("Deletes the prepared copies of the maps not opened since the program started");
+    grid->addWidget(clear, 3, 0, 1, 2);
+    languageButton = plain(portuguese() ? "English" : "Português", [this] { setLanguage(!portuguese()); });
+    languageButton->literal = true;   // each language's own name
+    grid->addWidget(languageButton, 3, 2, 1, 2);
+    grid->addWidget(menuButton(action("Quit", QKeySequence("Ctrl+Q"), [this] { close(); })), 3, 4, 1, 2);
     v->addLayout(grid);
 
-    v->addWidget(ui::caption("Selection"));
+    v->addWidget(ui::caption("Edit"));
     grid = new QGridLayout;
     grid->setSpacing(3);
-    grid->addWidget(menuButton(action("Move to the active layer", QKeySequence("Ctrl+M"), [this] { moveSelectionToActiveLayer(); })), 0, 0, 1, 2);
+    grid->addWidget(menuButton(action("Undo", QKeySequence("Ctrl+Z"), [this] { undo(); })), 0, 0);
+    QAction *redoAction = action("Redo", QKeySequence("Ctrl+Y"), [this] { redo(); });
+    redoAction->setShortcuts({QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")});
+    grid->addWidget(menuButton(redoAction), 0, 1);
+    action("Paste", QKeySequence("Ctrl+V"), [this] { paste(); });
+    action("Copy", QKeySequence("Ctrl+C"), [this] { copySelection(); });       // these two are buttons in the properties popups
+    action("Duplicate", QKeySequence("Ctrl+D"), [this] { duplicate(); });
+    auto *pasteButton = new MenuButton("Paste", "Ctrl+V");   // from the menu the items go where the menu was opened
+    connect(pasteButton, &QAbstractButton::clicked, this, [this] {
+        menu->dismiss();
+        pasteAt(clipboardItems(), canvas->mapToScene(canvas->viewport()->mapFrom(canvas, menuAt)));
+    });
+    grid->addWidget(pasteButton, 0, 2);
     auto *del = new MenuButton("Delete", "Del");
     del->ink = ui::danger;
     connect(del, &QAbstractButton::clicked, this, [this] { menu->dismiss(); canvas->deleteSelected(); });
-    grid->addWidget(del, 0, 2);
+    grid->addWidget(del, 1, 2);
+    grid->addWidget(menuButton(action("Move to the active layer", QKeySequence("Ctrl+M"), [this] { moveSelectionToActiveLayer(); })), 1, 0, 1, 2);
     v->addLayout(grid);
 }
 
 void MainWindow::openMenu(QPoint at) {
+    menuAt = at;
     props->dismiss();
     toolButtons[canvas->tool()]->setChecked(true);
     snapButton->setChecked(snapEnabled);
@@ -241,20 +318,36 @@ void MainWindow::openMenu(QPoint at) {
     menu->popUp(at + QPoint(2, 2));
 }
 
-void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
+QVBoxLayout *MainWindow::newPopup() {
     menu->dismiss();
+    props->hide();   // still fading out from a moment ago: content put in a visible panel was not measured, the popup came out empty
     delete propsContent;
     propsContent = new QWidget;
     auto *v = new QVBoxLayout(propsContent);
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(4);
     props->body->addWidget(propsContent);
+    return v;
+}
 
+void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
+    QVBoxLayout *v = newPopup();
+    auto title = [v](const QString &text) { v->addWidget(heading(new QLabel(text))); };
     auto deleteButton = [this](const QString &text) {
         auto *b = new MenuButton(text, "Del");
         b->ink = ui::danger;
         connect(b, &QAbstractButton::clicked, this, [this] { props->dismiss(); canvas->deleteSelected(); });
         return b;
+    };
+    auto copyRow = [this, v] {
+        auto *row = new QHBoxLayout;
+        row->setSpacing(3);
+        for (bool copy : {true, false}) {
+            auto *b = new MenuButton(copy ? "Copy" : "Duplicate", copy ? "Ctrl+C" : "Ctrl+D");
+            connect(b, &QAbstractButton::clicked, this, [this, copy] { props->dismiss(); copy ? copySelection() : duplicate(); });
+            row->addWidget(b);
+        }
+        v->addLayout(row);
     };
     auto colorRow = [this, v](const QColor &current, std::function<void(const QColor &)> apply) {
         v->addWidget(ui::caption("Colour"));
@@ -270,35 +363,46 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
     auto *t = qgraphicsitem_cast<TextItem *>(it);
     auto *s = qgraphicsitem_cast<StrokeItem *>(it);
     if (sel.size() > 1) {
-        v->addWidget(heading(QString("%1 items selected").arg(sel.size())));
+        title(T("%1 items selected").arg(sel.size()));
         auto *move = new MenuButton("Move to the active layer", "Ctrl+M");
         connect(move, &QAbstractButton::clicked, this, [this] { props->dismiss(); moveSelectionToActiveLayer(); });
         v->addWidget(move);
+        copyRow();
         v->addWidget(deleteButton("Delete selection"));
     } else if (z) {
-        v->addWidget(heading(z->shapeKind == ZoneItem::Rect ? "Rectangle zone" : z->shapeKind == ZoneItem::Ellipse ? "Circle zone" : "Vertex zone"));
+        title(T(z->shapeKind == ZoneItem::Rect ? "Rectangle zone" : z->shapeKind == ZoneItem::Ellipse ? "Circle zone" : "Vertex zone"));
         v->addWidget(ui::caption("Name"));
         auto *name = new QLineEdit(z->name);
-        name->setPlaceholderText("Unnamed");
+        name->setPlaceholderText(T("Unnamed"));
         connect(name, &QLineEdit::textChanged, this, [this, z](const QString &n) { z->name = n; z->update(); setDirty(true); });
         v->addWidget(name);
         colorRow(z->color, [z](const QColor &c) { z->color = c; z->update(); });
         v->addWidget(ui::caption("Description"));
         auto *desc = new QPlainTextEdit(z->desc);
         desc->setFixedHeight(96);
-        desc->setPlaceholderText("Notes about this area");
+        desc->setPlaceholderText(T("Notes about this area"));
         connect(desc, &QPlainTextEdit::textChanged, this, [this, z, desc] { z->setDesc(desc->toPlainText()); setDirty(true); });
         v->addWidget(desc);
         v->addSpacing(4);
+        copyRow();
         v->addWidget(deleteButton("Delete zone"));
     } else if (m) {
-        v->addWidget(heading("Map · " + QFileInfo(m->src->path).fileName()));
+        title(T("Map") + " · " + QFileInfo(m->src->path).fileName());
+        if (!m->src->error.isEmpty()) {   // the image moved or was renamed
+            auto *locate = new MenuButton("Locate image…");
+            connect(locate, &QAbstractButton::clicked, this, [this, m] {
+                props->dismiss();
+                const QString f = QFileDialog::getOpenFileName(this, T("Locate %1").arg(QFileInfo(m->src->path).fileName()), QString(), imageFilter());
+                if (!f.isEmpty()) say(T("%1 image(s) located.").arg(locateImage(m, f)));
+            });
+            v->addWidget(locate);
+        }
         const Calibration &cal = m->cal;
         v->addWidget(ui::caption("Grid"));
-        auto *kind = new QLabel(!cal.valid() ? QString("Not calibrated yet.")
-                                : QString("%1, cell of %2 px%3").arg(cal.grid == Calibration::Square ? "Squares" : cal.grid == Calibration::HexPointy ? "Hexes, pointy top" : "Hexes, flat top")
+        auto *kind = new QLabel(!cal.valid() ? T("Not calibrated yet.")
+                                : T("%1, cell of %2 px%3").arg(T(cal.grid == Calibration::Square ? "Squares" : cal.grid == Calibration::HexPointy ? "Hexes, pointy top" : "Hexes, flat top"))
                                       .arg(cal.cellSize(), 0, 'f', 2)
-                                      .arg(cal.field.isEmpty() ? QString() : QString(", follows local variations")));
+                                      .arg(cal.field.isEmpty() ? QString() : T(", follows local variations")));
         kind->setWordWrap(true);
         v->addWidget(kind);
         auto *form = new QGridLayout;
@@ -315,9 +419,9 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         cell->setEnabled(cal.valid());
         auto *per = spin(0.001, 1e6, cal.unitsPerCell, "");
         auto *unit = new QLineEdit(cal.unit);
-        form->addWidget(new QLabel(cal.isHex() ? "1 hex" : "1 square"), 0, 0);
+        form->addWidget(new QLabel(T(cal.isHex() ? "1 hex" : "1 square")), 0, 0);
         form->addWidget(cell, 0, 1, 1, 2);
-        form->addWidget(new QLabel("Is worth"), 1, 0);
+        form->addWidget(new QLabel(T("Is worth")), 1, 0);
         form->addWidget(per, 1, 1);
         form->addWidget(unit, 1, 2);
         v->addLayout(form);
@@ -340,10 +444,11 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         connect(calibrate, &QAbstractButton::clicked, this, [this] { props->dismiss(); canvas->setTool(Canvas::Calibrate); });
         v->addWidget(calibrate);
         v->addSpacing(4);
+        copyRow();
         v->addWidget(deleteButton("Remove map"));
     } else if (it->type() == LinkItem::Type) {
         auto *l = static_cast<LinkItem *>(it);
-        v->addWidget(heading("Link between maps"));
+        title(T("Link between maps"));
         v->addWidget(ui::caption("Name"));
         auto *name = new QLineEdit(l->name);
         connect(name, &QLineEdit::textChanged, this, [this, l](const QString &n) {
@@ -353,26 +458,35 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         v->addWidget(name);
         colorRow(l->color, [l](const QColor &c) { for (LinkItem *x : {l, l->partner}) if (x) { x->color = c; x->update(); } });
         if (!l->partner) {
-            auto *lonely = new QLabel("This end has no pair yet: drag one with New link (J).");
+            auto *lonely = new QLabel(T("This end has no pair yet: drag one with New link (J)."));
             lonely->setWordWrap(true);
             v->addWidget(lonely);
         }
-        auto *go = new MenuButton("Go to the other end", "double click");
+        auto *go = new MenuButton("Go to the other end", T("double click"));
         go->setEnabled(l->partner);
         connect(go, &QAbstractButton::clicked, this, [this, l] { props->dismiss(); canvas->travel(l, l->mapToScene(l->box().center())); });
         v->addWidget(go);
         v->addSpacing(4);
         v->addWidget(deleteButton("Delete link (both ends)"));
     } else if (t) {
-        v->addWidget(heading(t->note ? "Note" : "Text"));
+        title(T(t->note ? "Note" : "Text"));
         colorRow(t->color, [t](const QColor &c) { t->setColor(c); });
-        auto *editText = new MenuButton("Edit text", "double click");
+        v->addWidget(ui::caption("Size"));
+        auto *size = new QSlider(Qt::Horizontal);
+        size->setRange(-60, 80);   // scale = 2^(value / 10): the whole zoom range a text can be made at
+        size->setValue(qRound(10 * std::log2(t->scale())));
+        size->setFocusPolicy(Qt::NoFocus);
+        connect(size, &QSlider::valueChanged, this, [this, t](int x) { t->setScale(std::pow(2.0, x / 10.0)); setDirty(true); });
+        v->addWidget(size);
+        auto *editText = new MenuButton("Edit text", T("double click"));
         connect(editText, &QAbstractButton::clicked, this, [this, t] { props->dismiss(); canvas->setFocus(); t->startEditing(); });
         v->addWidget(editText);
+        copyRow();
         v->addWidget(deleteButton(t->note ? "Delete note" : "Delete text"));
     } else if (s) {
-        v->addWidget(heading("Stroke"));
+        title(T("Stroke"));
         colorRow(s->pen().color(), [s](const QColor &c) { QPen p = s->pen(); p.setColor(c); s->setPen(p); });
+        copyRow();
         v->addWidget(deleteButton("Delete stroke"));
     }
     props->popUp(at + QPoint(2, 2));
@@ -383,7 +497,7 @@ void MainWindow::buildLayersPanel() {
     layersPanel->setFixedSize(310, 380);
     QVBoxLayout *v = layersPanel->body;
     auto *head = new QHBoxLayout;
-    head->addWidget(heading("Layers"));
+    head->addWidget(heading(new Label("Layers")));
     head->addStretch();
     auto *close = new MenuButton("×");
     close->setFixedWidth(30);
@@ -392,7 +506,7 @@ void MainWindow::buildLayersPanel() {
     v->addLayout(head);
     layerList = new QTreeWidget;
     layerList->setColumnCount(3);
-    layerList->setHeaderLabels({"Show", "Lock", "Name (active one highlighted)"});
+    layerList->setHeaderLabels({T("Show"), T("Lock"), T("Name (active one highlighted)")});
     layerList->setRootIsDecorated(false);
     layerList->setEditTriggers(QAbstractItemView::NoEditTriggers);
     layerList->setFocusPolicy(Qt::NoFocus);
@@ -404,22 +518,22 @@ void MainWindow::buildLayersPanel() {
     row->setSpacing(3);
     auto button = [&](const QString &text, const QString &tip, auto fn) {
         auto *b = new MenuButton(text);
-        b->setToolTip(tip);
+        b->setTip(tip);
         connect(b, &QAbstractButton::clicked, this, fn);
         row->addWidget(b);
         return b;
     };
     button("+ New", "New layer", [this] {
-        canvas->activeLayer = addLayer(QString("Layer %1").arg(layers.size() + 1));
+        canvas->activeLayer = addLayer(T("Layer %1").arg(layers.size() + 1));
         refreshLayers();
         setDirty(true);
     });
     button("Delete", "Delete the active layer and its content", [this] {
         LayerItem *l = canvas->activeLayer;
-        if (l && l->links) { say("The Links layer stays. Delete its links instead (show them with Shift+J)."); return; }
+        if (l && l->links) { say(T("The Links layer stays. Delete its links instead (show them with Shift+J).")); return; }
         if (!l || layers.size() <= 2) return;
         if (!l->childItems().isEmpty()
-            && QMessageBox::question(this, "Vax Maps", QString("Delete the layer \"%1\" and its %2 items?").arg(l->name, QString::number(l->childItems().size())))
+            && QMessageBox::question(this, "Vax Maps", T("Delete the layer \"%1\" and its %2 items?").arg(l->name, QString::number(l->childItems().size())))
                    != QMessageBox::Yes)
             return;
         canvas->cancelDrafts();
@@ -479,7 +593,7 @@ void MainWindow::toggleFullScreen() {
     } else {
         wasMaximized = isMaximized();
         showFullScreen();
-        say("Full screen. F11 leaves it.");
+        say(T("Full screen. F11 leaves it."));
     }
     fullButton->setChecked(isFullScreen());
 }
@@ -519,7 +633,27 @@ bool MainWindow::eventFilter(QObject *o, QEvent *e) {
 
 void MainWindow::setDirty(bool d) {
     dirty = d;
-    setWindowTitle(QString("Vax Maps - %1%2").arg(file.isEmpty() ? "Untitled" : QFileInfo(file).fileName(), d ? " *" : ""));
+    setWindowTitle(QString("Vax Maps - %1%2").arg(file.isEmpty() ? T("Untitled") : QFileInfo(file).fileName(), d ? " *" : ""));
+    if (d) undoTimer.start();                               // one undo step once the edits pause
+    else if (ownsRecovery) QFile::remove(recoveryFile());   // saved, or given up on purpose
+}
+
+void MainWindow::changeEvent(QEvent *e) {
+    if (e->type() == QEvent::LanguageChange && layerList) {
+        layerList->setHeaderLabels({T("Show"), T("Lock"), T("Name (active one highlighted)")});
+        setDirty(dirty);   // "Untitled" in the title
+    }
+    QMainWindow::changeEvent(e);
+}
+
+void MainWindow::setLanguage(bool pt) {
+    canvas->setTool(Canvas::Select);   // the calibration panel writes its texts as its steps go
+    scene->clearSelection();           // handles carry tooltips
+    props->dismiss();
+    setPortuguese(pt);                 // every widget gets a LanguageChange event
+    QSettings().setValue("language", pt ? "pt" : "en");
+    languageButton->setText(pt ? "English" : "Português");
+    say(T("Right click opens the menu. L shows the layers, F11 toggles full screen."));
 }
 
 LayerItem *MainWindow::addLayer(const QString &name, bool links) {
@@ -561,7 +695,7 @@ void MainWindow::refreshLayers() {
 MapItem *MainWindow::importMap(const QString &path, QPointF scenePos) {
     if (!canvas->layerUsable()) return nullptr;
     if (!QImageReader(path).canRead()) {
-        say("Unsupported image format: " + QFileInfo(path).fileName());
+        say(T("Unsupported image format: %1").arg(QFileInfo(path).fileName()));
         return nullptr;
     }
     auto *m = new MapItem(path);
@@ -571,12 +705,30 @@ MapItem *MainWindow::importMap(const QString &path, QPointF scenePos) {
     return m;
 }
 
+void MainWindow::importMaps(const QStringList &files, QPointF at) {
+    // Rows and columns, 100 px apart. One long row made 30 maps of 6000 px a canvas 183 000 px wide.
+    const int columns = int(std::ceil(std::sqrt(double(files.size()))));
+    QPointF origin;
+    double x = 0, y = 0, rowHeight = 0;
+    int placed = 0;
+    for (const QString &f : files) {
+        MapItem *m = importMap(f, at);
+        if (!m) continue;
+        if (!placed) origin = m->pos();   // the first map stays centred on the drop point
+        m->setPos(origin + QPointF(x, y));
+        x += m->boundingRect().width() + 100;
+        rowHeight = qMax(rowHeight, m->boundingRect().height());
+        if (++placed % columns == 0) {
+            x = 0;
+            y += rowHeight + 100;
+            rowHeight = 0;
+        }
+    }
+}
+
 void MainWindow::importDialog() {
-    const QStringList files = QFileDialog::getOpenFileNames(this, "Import maps", QString(),
-        "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.gif);;All files (*)");
-    QPointF pos = canvas->mapToScene(canvas->viewport()->rect().center());
-    for (const QString &f : files)
-        if (MapItem *m = importMap(f, pos)) pos.rx() += m->boundingRect().width() + 100;
+    importMaps(QFileDialog::getOpenFileNames(this, T("Import maps"), QString(), imageFilter()),
+               canvas->mapToScene(canvas->viewport()->rect().center()));
 }
 
 void MainWindow::newProject() {
@@ -585,8 +737,8 @@ void MainWindow::newProject() {
     props->dismiss();
     qDeleteAll(layers);
     layers.clear();
-    for (const char *name : {"Maps", "Zones", "Drawings", "Text"}) addLayer(name);
-    canvas->linksLayer = addLayer("Links", true);
+    for (const char *name : {"Maps", "Zones", "Drawings", "Text"}) addLayer(T(name));
+    canvas->linksLayer = addLayer(T("Links"), true);
     canvas->showLinks(false);
     canvas->activeLayer = layers.first();
     canvas->resetTransform();
@@ -594,33 +746,38 @@ void MainWindow::newProject() {
     file.clear();
     refreshLayers();
     setDirty(false);
+    resetHistory();
+}
+
+// Replaces every layer by the ones stored in `o`: a project file or an undo step.
+void MainWindow::setLayers(const QJsonObject &o, const QDir &base) {
+    props->dismiss();
+    qDeleteAll(layers);
+    layers = layersFromJson(o, scene, base);
+    if (layers.isEmpty()) addLayer(T("Layer %1").arg(1));
+    canvas->linksLayer = nullptr;
+    for (LayerItem *l : layers)
+        if (l->links) canvas->linksLayer = l;
+    if (!canvas->linksLayer) canvas->linksLayer = addLayer(T("Links"), true);
+    layers.removeOne(canvas->linksLayer);   // always on top
+    layers << canvas->linksLayer;
+    restackLayers();
 }
 
 bool MainWindow::openProject(const QString &f) {
     QFile in(f);
     if (!in.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, "Vax Maps", "Could not open " + f + ": " + in.errorString());
+        QMessageBox::warning(this, "Vax Maps", T("Could not open %1: %2").arg(f, in.errorString()));
         return false;
     }
-    QJsonParseError err;
-    const QJsonDocument doc = QJsonDocument::fromJson(in.readAll(), &err);
+    const QJsonDocument doc = QJsonDocument::fromJson(in.readAll());
     if (doc.isNull() || doc.object()["format"].toString() != "vaxmaps") {
-        QMessageBox::warning(this, "Vax Maps", "Not a Vax Maps project: " + f);
+        QMessageBox::warning(this, "Vax Maps", T("Not a Vax Maps project: %1").arg(f));
         return false;
     }
     canvas->setTool(Canvas::Select);   // ends drafts and a calibration in progress
     canvas->clearRulers();
-    props->dismiss();
-    qDeleteAll(layers);
-    layers = layersFromJson(doc.object(), scene, QFileInfo(f).absoluteDir());
-    if (layers.isEmpty()) addLayer("Layer 1");
-    canvas->linksLayer = nullptr;
-    for (LayerItem *l : layers)
-        if (l->links) canvas->linksLayer = l;
-    if (!canvas->linksLayer) canvas->linksLayer = addLayer("Links", true);
-    layers.removeOne(canvas->linksLayer);   // always on top
-    layers << canvas->linksLayer;
-    restackLayers();
+    setLayers(doc.object(), QFileInfo(f).absoluteDir());
     canvas->showLinks(false);
     canvas->activeLayer = layers.first();
     const QJsonObject v = doc.object()["view"].toObject();
@@ -629,22 +786,77 @@ bool MainWindow::openProject(const QString &f) {
     canvas->scale(z, z);
     canvas->centerOn(v["cx"].toDouble(), v["cy"].toDouble());
     emit canvas->zoomChanged(z);
-    file = QFileInfo(f).absoluteFilePath();
+    // The recovery copy opens as the project it came from, with its changes still unsaved.
+    // Only that copy may name another file: any other project could point Save at a file of its choice.
+    const bool recovered = QFileInfo(f) == QFileInfo(recoveryFile());
+    file = recovered ? doc.object()["recoveredFrom"].toString() : QFileInfo(f).absoluteFilePath();
+    if (!recovered) addRecent(file);
     refreshLayers();
-    setDirty(false);
+    setDirty(recovered);
+    resetHistory();
     return true;
 }
 
-bool MainWindow::saveTo(const QString &f) {
-    QJsonObject o = layersToJson(layers, QFileInfo(f).absoluteDir());
+bool MainWindow::openFromUi(const QString &f) {
+    if (!openProject(f)) return false;
+    askMissingImages();
+    return true;
+}
+
+// ---- missing images ----
+
+int MainWindow::locateImage(MapItem *map, const QString &path) {
+    // The other missing images are looked for beside the one just found: a moved folder is fixed in one go.
+    const QDir dir = QFileInfo(path).absoluteDir();
+    int found = 0;
+    eachMap(layers, [&](MapItem *m) {
+        if (m != map && !imageMissing(m)) return;
+        const QString candidate = m == map ? path : dir.filePath(QFileInfo(m->src->path).fileName());
+        if (!QFileInfo(candidate).isFile()) return;
+        m->setSource(candidate);
+        ++found;
+    });
+    if (found) setDirty(true);
+    return found;
+}
+
+void MainWindow::askMissingImages() {
+    for (;;) {
+        MapItem *first = nullptr;
+        int missing = 0;
+        eachMap(layers, [&](MapItem *m) {
+            if (!imageMissing(m)) return;
+            if (!first) first = m;
+            ++missing;
+        });
+        if (!first) return;
+        const QString name = QFileInfo(first->src->path).fileName();
+        if (QMessageBox::question(this, "Vax Maps", T("%1 image(s) of this project were not found. The first one is %2. Locate it now?").arg(missing).arg(name))
+            != QMessageBox::Yes)
+            return;
+        const QString f = QFileDialog::getOpenFileName(this, T("Locate %1").arg(name), QString(), imageFilter());
+        if (f.isEmpty()) return;
+        say(T("%1 image(s) located.").arg(locateImage(first, f)));
+    }
+}
+
+// ---- saving, recovery copy ----
+
+QJsonObject MainWindow::toJson(const QDir &base) const {
+    QJsonObject o = layersToJson(layers, base);
     const QPointF c = canvas->mapToScene(canvas->viewport()->rect().center());
     o["view"] = QJsonObject{{"cx", c.x()}, {"cy", c.y()}, {"zoom", canvas->zoom()}};
-    QSaveFile out(f);   // writes to a temp file and renames: a failed save never truncates the old project
-    if (!out.open(QIODevice::WriteOnly) || out.write(QJsonDocument(o).toJson(QJsonDocument::Compact)) < 0 || !out.commit()) {
-        QMessageBox::warning(this, "Vax Maps", "Could not save " + f + ": " + out.errorString());
+    return o;
+}
+
+bool MainWindow::saveTo(const QString &f) {
+    QString error;
+    if (!writeJson(f, toJson(QFileInfo(f).absoluteDir()), &error)) {
+        QMessageBox::warning(this, "Vax Maps", T("Could not save %1: %2").arg(f, error));
         return false;
     }
     file = QFileInfo(f).absoluteFilePath();
+    addRecent(file);
     setDirty(false);
     return true;
 }
@@ -652,8 +864,8 @@ bool MainWindow::saveTo(const QString &f) {
 bool MainWindow::save() { return file.isEmpty() ? saveAs() : saveTo(file); }
 
 bool MainWindow::saveAs() {
-    QString f = QFileDialog::getSaveFileName(this, "Save project", file.isEmpty() ? "map.vaxmap" : file,
-                                             "Vax Maps project (*.vaxmap)");
+    QString f = QFileDialog::getSaveFileName(this, T("Save project"), file.isEmpty() ? T("map.vaxmap") : file,
+                                             T("Vax Maps project (*.vaxmap)"));
     if (f.isEmpty()) return false;
     if (!f.endsWith(".vaxmap", Qt::CaseInsensitive)) f += ".vaxmap";
     return saveTo(f);
@@ -661,21 +873,254 @@ bool MainWindow::saveAs() {
 
 void MainWindow::open() {
     if (!maybeSave()) return;
-    const QString f = QFileDialog::getOpenFileName(this, "Open project", QString(), "Vax Maps project (*.vaxmap)");
-    if (!f.isEmpty()) openProject(f);
+    const QString f = QFileDialog::getOpenFileName(this, T("Open project"), QString(), T("Vax Maps project (*.vaxmap)"));
+    if (!f.isEmpty()) openFromUi(f);
 }
 
 bool MainWindow::maybeSave() {
     if (!dirty) return true;
-    const auto r = QMessageBox::question(this, "Vax Maps", "Save the changes to this project?",
+    const auto r = QMessageBox::question(this, "Vax Maps", T("Save the changes to this project?"),
                                          QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
     if (r == QMessageBox::Save) return save();
     return r == QMessageBox::Discard;
 }
 
 void MainWindow::closeEvent(QCloseEvent *e) {
-    if (maybeSave()) e->accept();
-    else e->ignore();
+    if (!maybeSave()) return e->ignore();
+    if (ownsRecovery) QFile::remove(recoveryFile());   // closed on purpose: nothing to recover
+    e->accept();
+}
+
+QString MainWindow::recoveryFile() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/recovery.vaxmap";
+}
+
+bool MainWindow::offerRecovery() {
+    QDir().mkpath(QFileInfo(recoveryFile()).path());
+    recoveryLock.setStaleLockTime(0);
+    ownsRecovery = recoveryLock.tryLock();   // a second window of the program leaves the first one's copy alone
+    const QFileInfo copy(recoveryFile());
+    if (!ownsRecovery || !copy.exists()) return false;
+    const bool restore = QMessageBox::question(this, "Vax Maps",
+                             T("Vax Maps did not close normally and left unsaved work from %1. Restore it? No discards that work.")
+                                 .arg(QLocale().toString(copy.lastModified(), QLocale::ShortFormat))) == QMessageBox::Yes;
+    if (restore && openProject(recoveryFile())) {
+        askMissingImages();
+        return true;
+    }
+    QFile::remove(recoveryFile());
+    return false;
+}
+
+void MainWindow::autosave() {
+    if (!ownsRecovery || !dirty || QGuiApplication::mouseButtons()) return;   // not half way through a drag: the next minute will do
+    QJsonObject o = toJson(QFileInfo(recoveryFile()).absoluteDir());
+    o["recoveredFrom"] = file;
+    writeJson(recoveryFile(), o);   // a failure stays silent: it is tried again in a minute
+}
+
+QStringList MainWindow::recentFiles() const { return QSettings().value("recent").toStringList(); }
+
+void MainWindow::showRecent() {
+    const QPoint at = menu->pos();
+    QVBoxLayout *v = newPopup();
+    v->addWidget(heading(new QLabel(T("Recent projects"))));
+    bool any = false;
+    for (const QString &f : recentFiles()) {
+        if (!QFileInfo(f).isFile()) continue;
+        auto *b = new MenuButton(QFileInfo(f).fileName(), QFileInfo(f).dir().dirName());
+        b->literal = true;
+        b->setToolTip(QDir::toNativeSeparators(f));
+        connect(b, &QAbstractButton::clicked, this, [this, f] {
+            props->dismiss();
+            if (maybeSave()) openFromUi(f);
+        });
+        v->addWidget(b);
+        any = true;
+    }
+    if (!any) v->addWidget(new QLabel(T("No project opened or saved yet.")));
+    props->popUp(at);
+}
+
+// ---- undo ----
+
+// shortcut: a step is the whole project (compressed JSON), not a command. Move to per-command undo
+// if projects reach tens of MB of strokes and a step starts to be felt.
+QByteArray MainWindow::state() const {
+    return qCompress(QJsonDocument(layersToJson(layers, QDir::root())).toJson(QJsonDocument::Compact), 1);
+}
+
+void MainWindow::resetHistory() {
+    undoTimer.stop();
+    undoStack = {state()};
+    redoStack.clear();
+}
+
+void MainWindow::snapshot() {
+    undoTimer.stop();
+    const QByteArray now = state();
+    if (now == undoStack.last()) return;   // marked as changed, with nothing different
+    undoStack << now;
+    redoStack.clear();
+    if (undoStack.size() > 100) undoStack.removeFirst();
+}
+
+void MainWindow::restore(const QByteArray &step) {
+    scene->clearSelection();
+    canvas->cancelDrafts();
+    if (canvas->tool() == Canvas::Calibrate) canvas->setTool(Canvas::Calibrate);   // the map it was measuring is replaced
+    const int active = layers.indexOf(canvas->activeLayer);
+    setLayers(QJsonDocument::fromJson(qUncompress(step)).object(), QDir::root());
+    canvas->activeLayer = layers.value(active, layers.first());
+    refreshLayers();
+    setDirty(true);
+    undoTimer.stop();   // loading the step is not an edit
+}
+
+void MainWindow::undo() {
+    if (undoTimer.isActive()) snapshot();   // an edit made in the last 0.4 s
+    if (undoStack.size() < 2) return say(T("Nothing to undo."));
+    redoStack << undoStack.takeLast();
+    restore(undoStack.last());
+}
+
+void MainWindow::redo() {
+    if (undoTimer.isActive()) snapshot();
+    if (redoStack.isEmpty()) return say(T("Nothing to redo."));
+    undoStack << redoStack.takeLast();
+    restore(undoStack.last());
+}
+
+// ---- copy, paste, duplicate ----
+
+QList<QGraphicsItem *> MainWindow::selectionInOrder() const {
+    QList<QGraphicsItem *> items;   // bottom first, so the copies stack as the originals do
+    for (LayerItem *l : layers)
+        for (QGraphicsItem *c : l->childItems())
+            if (c->isSelected() && c->type() != LinkItem::Type) items << c;   // a link is a pair: one end alone means nothing
+    return items;
+}
+
+void MainWindow::copySelection() {
+    const QList<QGraphicsItem *> items = selectionInOrder();
+    if (items.isEmpty()) return;
+    auto *mime = new QMimeData;
+    mime->setData(clipboardFormat, QJsonDocument(itemsToJson(items, QDir::root())).toJson(QJsonDocument::Compact));
+    QGuiApplication::clipboard()->setMimeData(mime);
+    say(T("%1 item(s) copied.").arg(items.size()));
+}
+
+void MainWindow::pasteAt(const QByteArray &json, QPointF centre) {
+    if (json.isEmpty() || !canvas->layerUsable()) return;
+    QList<QGraphicsItem *> items;
+    for (QGraphicsItem *it : itemsFromJson(QJsonDocument::fromJson(json).array(), QDir::root())) {
+        if (it->type() == LinkItem::Type) delete it;   // links live only in their layer, in pairs
+        else items << it;
+    }
+    scene->clearSelection();
+    QRectF box;
+    for (QGraphicsItem *it : items) {
+        it->setParentItem(canvas->activeLayer);
+        box |= it->sceneBoundingRect();
+    }
+    for (QGraphicsItem *it : items) {
+        it->moveBy(centre.x() - box.center().x(), centre.y() - box.center().y());
+        it->setSelected(true);
+    }
+    if (!items.isEmpty()) setDirty(true);
+}
+
+void MainWindow::paste() {
+    QPoint at = canvas->viewport()->mapFromGlobal(QCursor::pos());
+    if (!canvas->viewport()->rect().contains(at)) at = canvas->viewport()->rect().center();
+    pasteAt(clipboardItems(), canvas->mapToScene(at));
+}
+
+void MainWindow::duplicate() {
+    const QList<QGraphicsItem *> items = selectionInOrder();
+    if (items.isEmpty()) return;
+    QRectF box;
+    for (QGraphicsItem *it : items) box |= it->sceneBoundingRect();
+    pasteAt(QJsonDocument(itemsToJson(items, QDir::root())).toJson(QJsonDocument::Compact), box.center() + QPointF(20, 20) / canvas->zoom());
+}
+
+// ---- find, export, cache ----
+
+QList<QGraphicsItem *> MainWindow::findNamed(const QString &text) const {
+    QList<QGraphicsItem *> found;
+    const QString part = text.trimmed();
+    if (part.isEmpty()) return found;
+    for (LayerItem *l : layers)
+        if (l->isVisible())
+            for (QGraphicsItem *c : l->childItems())
+                if ((c->type() == ZoneItem::Type || c->type() == LinkItem::Type) && static_cast<ZoneItem *>(c)->name.contains(part, Qt::CaseInsensitive))
+                    found << c;
+    return found;
+}
+
+void MainWindow::goTo(QGraphicsItem *it) {
+    canvas->glideTo(it->sceneBoundingRect().center());
+    scene->clearSelection();
+    it->setSelected(true);   // ignored for hidden links and locked layers: the view still goes there
+}
+
+void MainWindow::showFind() {
+    QVBoxLayout *v = newPopup();
+    v->addWidget(heading(new QLabel(T("Find a zone or link"))));
+    auto *edit = new QLineEdit;
+    edit->setPlaceholderText(T("Part of its name"));
+    v->addWidget(edit);
+    auto *results = new QVBoxLayout;
+    results->setSpacing(2);
+    v->addLayout(results);
+    connect(edit, &QLineEdit::textChanged, this, [this, edit, results] {
+        while (QLayoutItem *old = results->takeAt(0)) {
+            delete old->widget();
+            delete old;
+        }
+        const QList<QGraphicsItem *> found = findNamed(edit->text());
+        for (QGraphicsItem *it : found.mid(0, 8)) {
+            auto *b = new MenuButton(static_cast<ZoneItem *>(it)->name, static_cast<LayerItem *>(it->parentItem())->name);
+            b->literal = true;
+            connect(b, &QAbstractButton::clicked, this, [this, it] { props->dismiss(); goTo(it); });
+            results->addWidget(b);
+        }
+        if (found.isEmpty() && !edit->text().trimmed().isEmpty()) results->addWidget(new QLabel(T("No zone or link with that name.")));
+        for (int i = 0; i < results->count(); ++i) results->itemAt(i)->widget()->show();   // Qt shows them only later, and unshown they are not measured
+        props->adjustSize();
+    });
+    connect(edit, &QLineEdit::returnPressed, this, [this, edit] {
+        const QList<QGraphicsItem *> found = findNamed(edit->text());
+        if (found.isEmpty()) return;
+        props->dismiss();
+        goTo(found.first());
+    });
+    props->popUp(QPoint((canvas->width() - props->width()) / 2, 40));
+    edit->setFocus();
+}
+
+bool MainWindow::exportView(const QString &f) {
+    scene->clearSelection();   // no handles or dashed outlines in the picture
+    // shortcut: screen resolution. Render the scene at the maps' own resolution if exports need more detail.
+    return canvas->viewport()->grab().save(f);
+}
+
+void MainWindow::exportDialog() {
+    const QFileInfo project(file);
+    QString f = QFileDialog::getSaveFileName(this, T("Export view"), file.isEmpty() ? T("view.png") : project.dir().filePath(project.completeBaseName() + ".png"),
+                                             T("PNG image (*.png);;JPEG image (*.jpg)"));
+    if (f.isEmpty()) return;
+    if (QFileInfo(f).suffix().isEmpty()) f += ".png";
+    if (exportView(f)) say(T("View exported to %1").arg(QFileInfo(f).fileName()));
+    else QMessageBox::warning(this, "Vax Maps", T("Could not write the image %1").arg(f));
+}
+
+void MainWindow::clearCache(std::function<void(qint64)> done) {
+    say(T("Clearing the tile cache…"));
+    MapData::clearCache([self = QPointer<MainWindow>(this), done](qint64 freed) {
+        if (self) self->say(T("Tile cache cleared: %1 MB freed. The maps opened since the program started keep theirs.").arg(freed / 1048576));
+        if (done) done(freed);
+    });
 }
 
 void MainWindow::fitAll() {

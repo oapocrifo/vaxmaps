@@ -3,6 +3,7 @@
 #include "calibration.h"
 #include "canvas.h"
 #include "items.h"
+#include "lang.h"
 #include "mainwindow.h"
 #include "mapitem.h"
 #include "ui.h"
@@ -16,9 +17,11 @@
 #include <QDoubleSpinBox>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QLockFile>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QSlider>
 #include <QTemporaryDir>
 #include <QTextCursor>
 #include <QTextStream>
@@ -415,6 +418,247 @@ void regressions(MainWindow &w, const QString &dir, const QString &image) {
     w.saveTo(file);
     w.openProject(file);
     check(countIn<TextItem>(w.layers[3]) == 1, QString("an empty text is not written to the project (%1 text item kept)").arg(countIn<TextItem>(w.layers[3])));
+}
+
+// What 0.5 added.
+void additions(MainWindow &w, const QString &dir, const QString &image) {
+    Canvas *c = w.canvas;
+    auto firstMap = [&]() -> MapItem * {
+        for (QGraphicsItem *it : w.layers[0]->childItems())
+            if (auto *m = qgraphicsitem_cast<MapItem *>(it)) return m;
+        return nullptr;
+    };
+
+    // undo and redo
+    w.newProject();
+    c->activeLayer = w.layers[1];
+    c->setTool(Canvas::ZoneRect);
+    drag(c, QPointF(0, 0), QPointF(200, 100));
+    w.undo();
+    const int afterUndo = countIn<ZoneItem>(w.layers[1]);
+    w.redo();
+    check(afterUndo == 0 && countIn<ZoneItem>(w.layers[1]) == 1, "undo removes the zone just drawn, redo brings it back");
+    c->activeLayer = w.layers[0];
+    MapItem *m = w.importMap(image, QPointF(0, -3000));
+    m->cal = Calibration::hex(Calibration::HexFlat, 64, QPointF(3, 4));
+    m->cal.unit = "km";
+    sceneEdited();
+    pause(500);   // edits less than 0.4 s apart are one undo step
+    m->setSelected(true);
+    c->deleteSelected();
+    const int afterDelete = countIn<MapItem>(w.layers[0]);
+    w.undo();
+    m = firstMap();
+    check(afterDelete == 0 && m && m->cal.grid == Calibration::HexFlat && m->cal.unit == "km" && countIn<ZoneItem>(w.layers[1]) == 1,
+          "undo restores a deleted map with its calibration");
+    c->activeLayer = w.layers[2];
+    c->setTool(Canvas::Pen);
+    drag(c, QPointF(300, 300), QPointF(400, 300), 4);
+    w.undo();
+    check(c->tool() == Canvas::Pen && countIn<StrokeItem>(w.layers[2]) == 0 && c->activeLayer == w.layers[2], "undo keeps the tool and the active layer");
+
+    // recovery copy
+    QFile::remove(MainWindow::recoveryFile());
+    const bool nothingLeft = !w.offerRecovery();   // also takes the recovery lock, as at every start
+    c->activeLayer = w.layers[1];
+    c->setTool(Canvas::ZoneRect);
+    drag(c, QPointF(300, 0), QPointF(500, 100));   // unsaved: a second zone
+    w.autosave();
+    QLockFile otherWindow(MainWindow::recoveryFile() + ".lock");
+    check(nothingLeft && w.dirty && QFile::exists(MainWindow::recoveryFile()) && !otherWindow.tryLock(),
+          "unsaved work is copied to the recovery file, which a second window of the program cannot take");
+    w.openProject(MainWindow::recoveryFile());   // what Restore does at the next start
+    check(w.dirty && countIn<ZoneItem>(w.layers[1]) == 2 && countIn<MapItem>(w.layers[0]) == 1 && QFile::exists(MainWindow::recoveryFile())
+              && !w.recentFiles().contains(MainWindow::recoveryFile()),
+          "the recovery file brings the unsaved work back, still marked as unsaved");
+    check(w.saveTo(dir + "/recovered.vaxmap") && !QFile::exists(MainWindow::recoveryFile()), "saving removes the recovery file");
+
+    // an image that moved
+    QDir().mkpath(dir + "/moved");
+    QFile::copy(image, dir + "/moved/gone.png");
+    w.newProject();
+    c->activeLayer = w.layers[0];
+    m = w.importMap(dir + "/moved/gone.png", QPointF(0, 0));
+    m->cal = Calibration::square(64, QPointF(0, 0));
+    waitFor([&] { return m->src->ready; }, 60000);
+    const QString lost = dir + "/lost.vaxmap";
+    w.saveTo(lost);
+    QByteArray json;
+    {
+        QFile f(lost);
+        f.open(QIODevice::ReadOnly);
+        json = f.readAll().replace("moved/gone.png", "gone.png");   // the project as its author left it, before the folder was renamed
+    }
+    {
+        QFile f(lost);
+        f.open(QIODevice::WriteOnly);
+        f.write(json);
+    }
+    w.openProject(lost);
+    m = firstMap();
+    const bool wasMissing = m && !m->src->error.isEmpty();
+    const int located = m ? w.locateImage(m, dir + "/moved/gone.png") : 0;
+    check(wasMissing && located == 1 && m->src->error.isEmpty() && m->cal.valid() && w.dirty, "Locate image points a map at its moved file and keeps the calibration");
+
+    // tile cache
+    QDir cache(MapData::cacheRoot());
+    cache.mkpath("0123456789abcdef0123");
+    {
+        QFile f(cache.filePath("0123456789abcdef0123/0_0_0.png"));
+        f.open(QIODevice::WriteOnly);
+        f.write(QByteArray(3 << 20, 'x'));
+    }
+    qint64 freed = -1;
+    w.clearCache([&](qint64 bytes) { freed = bytes; });
+    waitFor([&] { return freed >= 0; }, 30000);
+    check(freed >= (3 << 20) && !cache.exists("0123456789abcdef0123") && !cache.exists("0123456789abcdef0123.del") && m && QDir(m->src->dir).exists(),
+          QString("Clear tile cache deletes the cache of maps not opened since the program started, and only that (%1 MB freed)").arg(freed / 1048576));
+
+    // text size, copy and paste, arrows, find, export
+    w.newProject();
+    auto *z = new ZoneItem(ZoneItem::Rect, {QPointF(0, 0), QPointF(200, 100)}, Qt::red);
+    z->setParentItem(w.layers[1]);
+    z->name = "Throne room";
+    auto *well = new ZoneItem(ZoneItem::Ellipse, {QPointF(3000, 2000), QPointF(3100, 2100)}, Qt::blue);
+    well->setParentItem(w.layers[1]);
+    well->name = "Well";
+    auto *t = new TextItem(false, Qt::white);
+    t->setParentItem(w.layers[3]);
+    t->setPlainText("Door");
+    t->setPos(40, 300);
+    t->setSelected(true);
+    w.openProperties(t, QPoint(60, 60));
+    auto *size = w.props->findChild<QSlider *>();
+    if (size) size->setValue(20);
+    check(size && std::abs(t->scale() - 4) < 1e-9, "the Size slider in a text's properties sets its size");
+    const int popupHeight = w.props->height();
+    w.props->dismiss();   // a second right click: closed and opened again at once, while it still fades out
+    w.openProperties(t, QPoint(60, 60));
+    check(w.props->height() == popupHeight, "the properties popup opened again at once is not empty");
+    key(c, Qt::Key_Escape);
+
+    w.scene->clearSelection();
+    z->setSelected(true);
+    t->setSelected(true);
+    c->activeLayer = w.layers[1];
+    w.copySelection();
+    w.paste();
+    const QList<QGraphicsItem *> pasted = w.scene->selectedItems();
+    check(pasted.size() == 2 && !pasted.contains(z) && !pasted.contains(t) && w.findNamed("throne").size() == 2 && countIn<TextItem>(w.layers[1]) == 1,
+          "Ctrl+C and Ctrl+V put copies of the selection in the active layer and select them");
+    w.duplicate();
+    check(w.findNamed("throne").size() == 3 && countIn<TextItem>(w.layers[1]) == 2 && w.scene->selectedItems().size() == 2, "Ctrl+D duplicates the selection");
+
+    w.scene->clearSelection();
+    z->setSelected(true);
+    const QPointF before = z->pos();
+    key(c, Qt::Key_Right);
+    key(c, Qt::Key_Down, {}, Qt::ShiftModifier);
+    const bool moved = z->pos() == before + QPointF(1, 10) / c->zoom();
+    w.scene->clearSelection();
+    const QPointF view = c->mapToScene(c->viewport()->rect().center());
+    key(c, Qt::Key_Right);
+    check(moved && c->mapToScene(c->viewport()->rect().center()) != view, "arrows move the selection 1 px (Shift: 10 px); with nothing selected they scroll the view");
+
+    const QList<QGraphicsItem *> found = w.findNamed("  WELL ");
+    if (found.size() == 1) w.goTo(found[0]);
+    waitFor([&] { return !c->cameraMoving(); }, 3000);
+    check(found.size() == 1 && found[0] == well && well->isSelected()
+              && QLineF(c->mapToScene(c->viewport()->rect().center()), well->sceneBoundingRect().center()).length() < 2,
+          "Find goes to the zone whose name contains the text and selects it");
+
+    const QString png = dir + "/view.png";
+    const bool exported = w.exportView(png);
+    const QImage shot(png);
+    check(exported && shot.width() >= c->viewport()->width() && w.scene->selectedItems().isEmpty()
+              && shot.pixelColor(shot.width() / 2, shot.height() / 2) != QColor(36, 37, 41),
+          "Export view writes the canvas as a picture, without the selection marks");
+
+    // several maps at once
+    w.newProject();
+    c->activeLayer = w.layers[0];
+    w.importMaps({image, image, image, image, image}, QPointF(0, 0));
+    QList<QRectF> boxes;
+    QSet<int> rows;
+    for (QGraphicsItem *it : w.layers[0]->childItems()) {
+        boxes << it->sceneBoundingRect();
+        rows << int(it->pos().y());
+    }
+    bool apart = boxes.size() == 5;
+    for (int i = 0; i < boxes.size(); ++i)
+        for (int j = i + 1; j < boxes.size(); ++j) apart = apart && !boxes[i].intersects(boxes[j]);
+    check(apart && rows.size() == 2, "five maps imported together land in rows and columns without overlapping");
+
+    // recent projects
+    const QString first = QFileInfo(dir + "/first.vaxmap").absoluteFilePath(), second = QFileInfo(dir + "/second.vaxmap").absoluteFilePath();
+    w.saveTo(first);
+    w.saveTo(second);
+    w.openProject(first);
+    check(w.recentFiles().mid(0, 2) == QStringList({first, second}), "recent projects: the last one opened or saved comes first");
+
+    // Portuguese
+    w.setLanguage(true);
+    w.newProject();
+    c->activeLayer = w.layers[0];
+    m = w.importMap(image, QPointF(0, 0));
+    m->cal = Calibration::square(100, QPointF(0, 0));
+    check(w.windowTitle().contains("Sem título") && w.layers[0]->name == "Mapas" && T("Save") == "Salvar"
+              && measureText(w.scene, m->mapToScene(QPointF(50, 50)), m->mapToScene(QPointF(350, 50))) == "3 quadrados · 4,5 m"
+              && QCoreApplication::translate("QPlatformTheme", "Cancel") == "Cancelar"
+              && QCoreApplication::translate("QColorDialog", "&Basic colors") == "Cores &básicas",
+          "Portuguese: window title, layer names, ruler with decimal comma, Qt's own dialog texts");
+    // every tool hint, panel and properties popup is shown once; none may ask for a text the table lacks
+    for (int tool = Canvas::Select; tool <= Canvas::Link; ++tool) c->setTool(Canvas::Tool(tool));
+    c->setTool(Canvas::Select);
+    auto *zone = new ZoneItem(ZoneItem::Poly, QPolygonF({QPointF(2000, 0), QPointF(2200, 0), QPointF(2100, 200)}), Qt::red);
+    zone->setParentItem(w.layers[1]);
+    auto *link = new LinkItem(QRectF(2300, 0, 100, 100), Qt::red);
+    link->setParentItem(c->linksLayer);
+    c->showLinks(true);
+    auto *note = new TextItem(true, QColor(246, 229, 141));
+    note->setParentItem(w.layers[3]);
+    note->setPlainText("Armadilha");
+    auto *stroke = new StrokeItem(Qt::red, 4);
+    stroke->setParentItem(w.layers[2]);
+    stroke->setPoints({QPointF(2500, 0), QPointF(2600, 50)});
+    auto *lostMap = new MapItem(dir + "/nowhere.png");
+    lostMap->setParentItem(w.layers[0]);
+    lostMap->setPos(2000, 400);
+    w.fitAll();
+    w.openMenu(QPoint(80, 80));
+    w.grab();   // buttons take their text when painted
+    key(c, Qt::Key_Escape);
+    key(c, Qt::Key_L, "l");
+    pause(250);
+    w.grab();
+    key(c, Qt::Key_L, "l");
+    for (QGraphicsItem *it : QList<QGraphicsItem *>{zone, link, note, stroke, lostMap, m}) {
+        w.scene->clearSelection();
+        it->setSelected(true);
+        w.openProperties(it, QPoint(60, 60));
+        w.grab();
+    }
+    zone->setSelected(true);   // two items selected
+    w.openProperties(m, QPoint(60, 60));
+    w.grab();
+    w.scene->clearSelection();
+    m->setSelected(true);
+    c->setTool(Canvas::Calibrate);
+    click(c, m->mapToScene(QPointF(100, 100)));
+    click(c, m->mapToScene(QPointF(200, 100)));   // a measurement the map's lines do not confirm
+    waitFor([&] { return !c->calibrator->busy(); }, 30000);
+    w.grab();
+    key(c, Qt::Key_F, "f");                       // detection
+    waitFor([&] { return !c->calibrator->busy(); }, 60000);
+    w.grab();
+    key(c, Qt::Key_Return);                       // applied
+    w.undo();
+    w.redo();
+    w.grab();
+    check(untranslated().isEmpty(), "Portuguese: every text the interface asks for is in the table" + (untranslated().isEmpty() ? QString() : ": " + untranslated().join(" | ")));
+    w.setLanguage(false);
+    check(w.windowTitle().contains("Untitled") && T("Save") == "Save" && QCoreApplication::translate("QPlatformTheme", "Cancel") == "Cancel",
+          "back to English");
 }
 
 void bench(MainWindow &w, const QString &dir) {
@@ -900,6 +1144,7 @@ int runSelfTest(const QStringList &args) {
     w.grab().save(out + "/vaxmaps-window.png");
 
     regressions(w, tmp.path(), map2);
+    additions(w, tmp.path(), map2);
     if (args.contains("--bench")) bench(w, tmp.path());
     w.dirty = false;
     say(failures ? QString("\n%1 failure(s)").arg(failures) : "\nAll tests passed.");

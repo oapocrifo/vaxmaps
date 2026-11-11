@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "lang.h"
 
 #include <QColorDialog>
 #include <QGraphicsOpacityEffect>
@@ -23,7 +24,7 @@ void glide(QVariantAnimation &a, double from, double to, int ms) {
 }
 
 QWidget *caption(const QString &t) {
-    auto *l = new QLabel(t.toUpper());
+    auto *l = new Label(t, true);
     QFont f = l->font();
     f.setPixelSize(10);
     f.setBold(true);
@@ -34,6 +35,17 @@ QWidget *caption(const QString &t) {
 }
 
 } // namespace ui
+
+// ---- Label ----
+
+Label::Label(const QString &english, bool upper) : key(english), upper(upper) {
+    setText(upper ? T(key).toUpper() : T(key));
+}
+
+void Label::changeEvent(QEvent *e) {
+    if (e->type() == QEvent::LanguageChange) setText(upper ? T(key).toUpper() : T(key));
+    QLabel::changeEvent(e);
+}
 
 // ---- Panel ----
 
@@ -62,7 +74,12 @@ void Panel::paintEvent(QPaintEvent *) {
 }
 
 void Panel::mousePressEvent(QMouseEvent *e) { e->accept(); }   // clicks on the panel never reach the canvas
-void Panel::wheelEvent(QWheelEvent *e) { e->accept(); }        // nor does the wheel (it would zoom)
+void Panel::wheelEvent(QWheelEvent *e) {
+    e->accept();   // the wheel over a panel never zooms the canvas
+    // A panel taller than the window (the menu on a small screen) scrolls with it instead of staying cut off.
+    const int hidden = height() - parentWidget()->height();
+    if (hidden > 0) move(x(), qBound(-hidden, y() + e->angleDelta().y() / 2, 0));
+}
 
 void Panel::popUp(QPoint pos, QPoint from) {
     adjustSize();
@@ -119,9 +136,25 @@ MenuButton::MenuButton(const QString &text, const QString &hint, QWidget *parent
     connect(this, &QAbstractButton::toggled, this, [this](bool on) { ui::glide(checkA, check, on ? 1 : 0, 180); });
 }
 
+QString MenuButton::label() const { return literal ? text() : T(text()); }
+
 QSize MenuButton::sizeHint() const {
     const QFontMetrics fm(font());
-    return QSize(fm.horizontalAdvance(text()) + (hint.isEmpty() ? 0 : fm.horizontalAdvance(hint) + 18) + 22, 30);
+    return QSize(fm.horizontalAdvance(label()) + (hint.isEmpty() ? 0 : fm.horizontalAdvance(hint) + 18) + 22, 30);
+}
+
+void MenuButton::setTip(const QString &english) {
+    tip = english;
+    setToolTip(T(tip));
+}
+
+void MenuButton::changeEvent(QEvent *e) {
+    if (e->type() == QEvent::LanguageChange) {
+        if (!tip.isEmpty()) setToolTip(T(tip));
+        updateGeometry();
+        update();
+    }
+    QAbstractButton::changeEvent(e);
 }
 
 void MenuButton::enterEvent(QEnterEvent *) { ui::glide(hoverA, hover, 1, 140); }
@@ -156,11 +189,13 @@ void MenuButton::paintEvent(QPaintEvent *) {
     p.setFont(f);
     p.setPen(isEnabled() ? ink : ui::muted.darker(130));
     const QRectF tr = r.adjusted(10, 0, -10, 0);
-    p.drawText(tr, Qt::AlignVCenter | (hint.isEmpty() ? Qt::AlignHCenter : Qt::AlignLeft), text());
+    QFont hf = f;
+    hf.setPixelSize(11);
+    const int room = int(tr.width()) - (hint.isEmpty() ? 0 : QFontMetrics(hf).horizontalAdvance(hint) + 8);   // long names are cut in the middle
+    p.drawText(tr, Qt::AlignVCenter | (hint.isEmpty() ? Qt::AlignHCenter : Qt::AlignLeft), QFontMetrics(f).elidedText(label(), Qt::ElideMiddle, room));
     if (!hint.isEmpty()) {
         p.setPen(check > 0.5 ? ui::text : ui::muted);
-        f.setPixelSize(11);
-        p.setFont(f);
+        p.setFont(hf);
         p.drawText(tr, Qt::AlignVCenter | Qt::AlignRight, hint);
     }
 }
@@ -210,7 +245,7 @@ void SwatchRow::mousePressEvent(QMouseEvent *e) {
     grow[i] = -0.4;   // a quick shrink that springs back
     tick->start();
     QColor c = colors[i];
-    if (!c.isValid()) c = QColorDialog::getColor(current.isValid() ? current : Qt::white, this, "Colour");
+    if (!c.isValid()) c = QColorDialog::getColor(current.isValid() ? current : Qt::white, this, T("Colour"));
     if (!c.isValid()) return;
     current = c;
     emit picked(c);

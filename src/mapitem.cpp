@@ -1,4 +1,5 @@
 #include "mapitem.h"
+#include "lang.h"
 
 #include <QApplication>
 #include <QCache>
@@ -171,6 +172,27 @@ QString MapData::cacheRoot() {
     return root;
 }
 
+void MapData::clearCache(std::function<void(qint64)> done) {
+    QSet<QString> keep;
+    for (const auto &m : std::as_const(registry)) keep.insert(QFileInfo(m->dir).fileName());
+    // Renamed now, deleted in the background: a map imported meanwhile never finds a half-deleted pyramid.
+    QDir root(cacheRoot());
+    QStringList doomed;
+    for (const QString &d : root.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        if (keep.contains(d)) continue;
+        const QString gone = d.endsWith(".del") ? d : d + ".del";
+        if (d == gone || root.rename(d, gone)) doomed << root.filePath(gone);
+    }
+    QThreadPool::globalInstance()->start([doomed, done] {
+        qint64 freed = 0;
+        for (const QString &d : doomed) {
+            for (const QFileInfo &f : QDir(d).entryInfoList(QDir::Files)) freed += f.size();
+            QDir(d).removeRecursively();
+        }
+        QMetaObject::invokeMethod(qApp, [done, freed] { done(freed); }, Qt::QueuedConnection);
+    });
+}
+
 QSize MapData::levelSize(int level) const {
     QSize s = size;
     for (int i = 0; i < level; ++i) s = QSize((s.width() + 1) / 2, (s.height() + 1) / 2);
@@ -233,12 +255,21 @@ void MapData::shutdown() {
 
 // ---- MapItem ----
 
-MapItem::MapItem(const QString &path) : src(MapData::get(path)), shownSize(src->size) {
+MapItem::MapItem(const QString &path) {
     setFlags(ItemIsSelectable | ItemIsMovable | ItemUsesExtendedStyleOption);
+    setSource(path);
+}
+
+void MapItem::setSource(const QString &path) {
+    if (src) src->disconnect(this);
+    src = MapData::get(path);
+    prepareGeometryChange();
+    shownSize = src->size;
     connect(src.data(), &MapData::changed, this, [this] {
         if (src->size != shownSize) { prepareGeometryChange(); shownSize = src->size; }
         update();
     });
+    update();
 }
 
 QRectF MapItem::boundingRect() const {
@@ -301,8 +332,8 @@ void MapItem::paint(QPainter *p, const QStyleOptionGraphicsItem *opt, QWidget *w
         p->setFont(f);
         p->setPen(src->error.isEmpty() ? QColor(220, 220, 220) : QColor(255, 120, 120));
         p->drawText(full, Qt::AlignCenter | Qt::TextWordWrap,
-                    src->error.isEmpty() ? QString("Preparing map…\n%1").arg(QFileInfo(src->path).fileName())
-                                         : QString("Error: %1\n%2").arg(src->error, src->path));
+                    src->error.isEmpty() ? T("Preparing map…\n%1").arg(QFileInfo(src->path).fileName())
+                                         : T("Error: %1\n%2").arg(T(src->error), src->path));
     } else {
         const int level = levelFor(s, src->levels);
         if (level == src->levels - 1) {

@@ -47,6 +47,7 @@ public:
     int rulerCount() const { return int(rulers.size()); }
     QString rulerText(int i) const;   // what the ruler's last label shows
     void travel(LinkItem *from, QPointF scenePoint);
+    void glideTo(QPointF sceneCentre);   // animated move of the view
     void showLinks(bool on);
     bool cameraMoving() const { return camera.state() == QAbstractAnimation::Running; }
 

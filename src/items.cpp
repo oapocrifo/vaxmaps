@@ -1,5 +1,6 @@
 #include "items.h"
 #include "canvas.h"
+#include "lang.h"
 #include "ui.h"
 
 #include <QGraphicsScene>
@@ -305,8 +306,8 @@ HandleItem::HandleItem(ZoneItem *zone, bool vertex, int index) : QGraphicsObject
     static const Qt::CursorShape cursors[8] = {Qt::SizeFDiagCursor, Qt::SizeVerCursor, Qt::SizeBDiagCursor, Qt::SizeHorCursor,
                                                Qt::SizeFDiagCursor, Qt::SizeVerCursor, Qt::SizeBDiagCursor, Qt::SizeHorCursor};
     setCursor(vertex ? Qt::SizeAllCursor : cursors[index]);
-    setToolTip(vertex ? "Drag to move the vertex. Right click removes it."
-                      : "Drag to resize. Shift on a corner keeps the proportions.");
+    setToolTip(T(vertex ? "Drag to move the vertex. Right click removes it."
+                        : "Drag to resize. Shift on a corner keeps the proportions."));
     setOpacity(0);
     auto *a = new QPropertyAnimation(this, "opacity", this);   // handles fade in when the zone is selected
     a->setDuration(160);
@@ -428,7 +429,7 @@ void LinkItem::paint(QPainter *p, const QStyleOptionGraphicsItem *o, QWidget *) 
     p->drawRect(r);
     const double lod = QStyleOptionGraphicsItem::levelOfDetailFromTransform(p->worldTransform());
     if (lod <= 0) return;
-    const QString label = (name.isEmpty() ? QString("Link") : name) + (partner ? QString("  ⇄") : QString("  (no pair)"));
+    const QString label = (name.isEmpty() ? T("Link") : name) + (partner ? QString("  ⇄") : "  " + T("(no pair)"));
     QFont f = p->font();
     f.setPixelSize(13);
     f.setBold(true);

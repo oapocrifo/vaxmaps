@@ -2,6 +2,7 @@
 #include <QGraphicsObject>
 #include <QImage>
 #include <QSharedPointer>
+#include <functional>
 #include <optional>
 #include "grid.h"
 
@@ -18,6 +19,8 @@ public:
     static QSharedPointer<MapData> get(const QString &path);
     static void shutdown();
     static QString cacheRoot();
+    // Deletes the pyramids of the maps not opened in this session, in the background. `done` gets the bytes freed.
+    static void clearCache(std::function<void(qint64)> done);
 
     QString path, dir, ext, error;
     QSize size;          // full image size
@@ -34,6 +37,7 @@ class MapItem : public QGraphicsObject {
 public:
     enum { Type = UserType + 1 };
     explicit MapItem(const QString &path);
+    void setSource(const QString &path);   // another image file, same position and calibration
     int type() const override { return Type; }
     QRectF boundingRect() const override;
     void paint(QPainter *p, const QStyleOptionGraphicsItem *opt, QWidget *w) override;

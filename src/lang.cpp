@@ -1,0 +1,342 @@
+#include "lang.h"
+
+#include <QApplication>
+#include <QHash>
+#include <QLocale>
+#include <QRegularExpression>
+#include <QSet>
+#include <QTranslator>
+#include <QWidget>
+
+namespace {
+
+// English text, Portuguese (Brazil) text. %1, %2... keep their numbers; %L2 prints that number with a decimal comma.
+const char *const table[][2] = {
+    // menu
+    {"Tools", "Ferramentas"},
+    {"Select", "Selecionar"},
+    {"Pan", "Mover vista"},
+    {"Pen", "Caneta"},
+    {"Eraser", "Borracha"},
+    {"Text", "Texto"},
+    {"Note", "Nota"},
+    {"Ruler", "Régua"},
+    {"Calibrate", "Calibrar"},
+    {"Zones", "Zonas"},
+    {"Rectangle", "Retângulo"},
+    {"Circle", "Círculo"},
+    {"Vertices", "Vértices"},
+    {"Links between maps", "Links entre mapas"},
+    {"New link", "Novo link"},
+    {"Show links", "Mostrar links"},
+    {"Colour and width", "Cor e espessura"},
+    {"View", "Vista"},
+    {"Snap to grid", "Aderir à grade"},
+    {"Layers", "Camadas"},
+    {"Full screen", "Tela cheia"},
+    {"Fit all", "Ver tudo"},
+    {"Zoom 100%", "Zoom 100%"},
+    {"Zoom in", "Ampliar"},
+    {"Zoom out", "Reduzir"},
+    {"Find…", "Buscar…"},
+    {"Project", "Projeto"},
+    {"New", "Novo"},
+    {"Open…", "Abrir…"},
+    {"Save", "Salvar"},
+    {"Save as…", "Salvar como…"},
+    {"Import maps…", "Importar mapas…"},
+    {"Export view…", "Exportar vista…"},
+    {"Open recent…", "Abrir recente…"},
+    {"Clear cache", "Limpar cache"},
+    {"Deletes the prepared copies of the maps not opened since the program started", "Apaga as cópias preparadas dos mapas não abertos desde o início do programa"},
+    {"Quit", "Sair"},
+    {"Edit", "Editar"},
+    {"Undo", "Desfazer"},
+    {"Redo", "Refazer"},
+    {"Paste", "Colar"},
+    {"Copy", "Copiar"},
+    {"Duplicate", "Duplicar"},
+    {"Delete", "Excluir"},
+    {"Move to the active layer", "Mover para a camada ativa"},
+
+    // tool hints and notices
+    {"Right click opens the menu. L shows the layers, F11 toggles full screen.", "O clique direito abre o menu. L mostra as camadas, F11 alterna a tela cheia."},
+    {"Select: click or drag to select, drag to move. Del deletes. Lock the maps layer so maps don't move by accident.",
+     "Selecionar: clique ou arraste para selecionar, arraste para mover. Del exclui. Trave a camada dos mapas para não movê-los por acidente."},
+    {"Pan: drag. The middle button or Space + drag also pan.", "Mover vista: arraste. O botão do meio ou Espaço + arrastar também movem a vista."},
+    {"Pen: drag to draw.", "Caneta: arraste para desenhar."},
+    {"Eraser: drag over strokes.", "Borracha: arraste sobre os traços."},
+    {"Text: click to type. Double click edits existing text.", "Texto: clique para digitar. Duplo clique edita um texto existente."},
+    {"Note: click to place a note.", "Nota: clique para colocar uma nota."},
+    {"Ruler: drag to measure. Drag again from a ruler's end to add a turn, or elsewhere for another ruler. Esc clears them.",
+     "Régua: arraste para medir. Arraste de novo a partir do fim de uma régua para adicionar uma curva, ou em outro lugar para outra régua. Esc apaga todas."},
+    {"Calibrate: follow the panel. Esc cancels.", "Calibrar: siga o painel. Esc cancela."},
+    {"Rectangle zone: drag. Shift keeps it square.", "Zona retangular: arraste. Shift mantém quadrada."},
+    {"Circle zone: drag. Shift keeps it round.", "Zona circular: arraste. Shift mantém redonda."},
+    {"Vertex zone: click each vertex. Double click, Enter or a click on the first vertex closes it.",
+     "Zona por vértices: clique em cada vértice. Duplo clique, Enter ou um clique no primeiro vértice fecha a zona."},
+    {"Link: drag an area, then drag its pair (it can be on another map).", "Link: arraste uma área e depois arraste o par dela (pode ficar em outro mapa)."},
+    {"The Links layer only holds links. Pick another layer in the Layers panel (L).", "A camada Links só guarda links. Escolha outra camada no painel Camadas (L)."},
+    {"The active layer is hidden or locked. Pick another one in the Layers panel (L).", "A camada ativa está oculta ou travada. Escolha outra no painel Camadas (L)."},
+    {"The Links layer is locked.", "A camada Links está travada."},
+    {"Linked. With links hidden (Shift+J), a click on either area moves the view to the other.",
+     "Ligado. Com os links ocultos (Shift+J), um clique em uma das áreas leva a vista até a outra."},
+    {"Now drag its pair. It can be on another map: pan and zoom first if needed.", "Agora arraste o par. Pode ficar em outro mapa: mova a vista e ajuste o zoom antes, se precisar."},
+    {"This link has no pair yet: drag one with the Link tool (J).", "Este link ainda não tem par: arraste um com a ferramenta Novo link (J)."},
+    {"Moved to the linked area.", "Vista levada à área ligada."},
+    {"Links shown: select, resize or delete them. Double click one to jump.", "Links visíveis: selecione, redimensione ou exclua. Duplo clique em um deles leva ao par."},
+    {"Links hidden: click one to jump to its pair.", "Links ocultos: clique em um para ir ao par."},
+    {"Snap to grid on: zone points stick to corners, ruler points to cell centres.",
+     "Aderência à grade ligada: pontos de zona grudam nos cantos, pontos de régua nos centros das células."},
+    {"Snap to grid off.", "Aderência à grade desligada."},
+    {"Full screen. F11 leaves it.", "Tela cheia. F11 sai."},
+    {"Nothing to undo.", "Nada para desfazer."},
+    {"Nothing to redo.", "Nada para refazer."},
+    {"%1 item(s) copied.", "%1 item(ns) copiado(s)."},
+    {"Unsupported image format: %1", "Formato de imagem não suportado: %1"},
+    {"%1 image(s) located.", "%1 imagem(ns) localizada(s)."},
+    {"View exported to %1", "Vista exportada para %1"},
+    {"Clearing the tile cache…", "Limpando o cache dos mapas…"},
+    {"Tile cache cleared: %1 MB freed. The maps opened since the program started keep theirs.",
+     "Cache limpo: %1 MB liberados. Os mapas abertos desde o início do programa mantêm o deles."},
+
+    // ruler, links, maps
+    {"Map not calibrated (K)", "Mapa não calibrado (K)"},
+    {"hex", "hexágono"},
+    {"hexes", "hexágonos"},
+    {"square", "quadrado"},
+    {"squares", "quadrados"},
+    {"Total: ", "Total: "},
+    {"Link", "Link"},
+    {"Link %1", "Link %1"},
+    {"(no pair)", "(sem par)"},
+    {"Drag to move the vertex. Right click removes it.", "Arraste para mover o vértice. O clique direito o remove."},
+    {"Drag to resize. Shift on a corner keeps the proportions.", "Arraste para redimensionar. Shift em um canto mantém as proporções."},
+    {"Preparing map…\n%1", "Preparando mapa…\n%1"},
+    {"Error: %1\n%2", "Erro: %1\n%2"},
+    {"file not found", "arquivo não encontrado"},
+    {"cannot write the cache", "não foi possível gravar o cache"},
+    {"cancelled", "cancelado"},
+
+    // layers
+    {"Maps", "Mapas"},
+    {"Drawings", "Desenhos"},
+    {"Links", "Links"},
+    {"Layer %1", "Camada %1"},
+    {"Show", "Mostrar"},
+    {"Lock", "Travar"},
+    {"Name (active one highlighted)", "Nome (ativa realçada)"},
+    {"+ New", "Nova"},
+    {"New layer", "Nova camada"},
+    {"Delete the active layer and its content", "Excluir a camada ativa e seu conteúdo"},
+    {"Move layer up", "Subir camada"},
+    {"Move layer down", "Descer camada"},
+    {"The Links layer stays. Delete its links instead (show them with Shift+J).", "A camada Links permanece. Exclua os links dela (Shift+J mostra os links)."},
+    {"Delete the layer \"%1\" and its %2 items?", "Excluir a camada \"%1\" e seus %2 itens?"},
+
+    // properties popups
+    {"%1 items selected", "%1 itens selecionados"},
+    {"Delete selection", "Excluir seleção"},
+    {"Rectangle zone", "Zona retangular"},
+    {"Circle zone", "Zona circular"},
+    {"Vertex zone", "Zona por vértices"},
+    {"Name", "Nome"},
+    {"Unnamed", "Sem nome"},
+    {"Colour", "Cor"},
+    {"Description", "Descrição"},
+    {"Notes about this area", "Anotações sobre esta área"},
+    {"Delete zone", "Excluir zona"},
+    {"Map", "Mapa"},
+    {"Locate image…", "Localizar imagem…"},
+    {"Locate %1", "Localizar %1"},
+    {"Grid", "Grade"},
+    {"Not calibrated yet.", "Ainda não calibrado."},
+    {"%1, cell of %2 px%3", "%1, célula de %L2 px%3"},
+    {"Squares", "Quadrados"},
+    {"Hexes", "Hexágonos"},
+    {"Hexes, pointy top", "Hexágonos, ponta para cima"},
+    {"Hexes, flat top", "Hexágonos, lado para cima"},
+    {", follows local variations", ", segue variações locais"},
+    {"1 hex", "1 hexágono"},
+    {"1 square", "1 quadrado"},
+    {"Is worth", "Vale"},
+    {"Show the calibrated grid", "Mostrar a grade calibrada"},
+    {"Calibrate the grid", "Calibrar a grade"},
+    {"Remove map", "Remover mapa"},
+    {"Link between maps", "Link entre mapas"},
+    {"This end has no pair yet: drag one with New link (J).", "Esta ponta ainda não tem par: arraste uma com Novo link (J)."},
+    {"Go to the other end", "Ir para a outra ponta"},
+    {"double click", "duplo clique"},
+    {"Delete link (both ends)", "Excluir link (as duas pontas)"},
+    {"Size", "Tamanho"},
+    {"Edit text", "Editar texto"},
+    {"Delete note", "Excluir nota"},
+    {"Delete text", "Excluir texto"},
+    {"Stroke", "Traço"},
+    {"Delete stroke", "Excluir traço"},
+    {"Recent projects", "Projetos recentes"},
+    {"No project opened or saved yet.", "Nenhum projeto aberto ou salvo até agora."},
+    {"Find a zone or link", "Buscar zona ou link"},
+    {"Part of its name", "Parte do nome"},
+    {"No zone or link with that name.", "Nenhuma zona ou link com esse nome."},
+
+    // calibration panel
+    {"Calibrate grid", "Calibrar grade"},
+    {"Detect the grid automatically", "Detectar a grade automaticamente"},
+    {"Apply", "Aplicar"},
+    {"Start over", "Recomeçar"},
+    {"Cancel", "Cancelar"},
+    {"1 hex =", "1 hexágono ="},
+    {"1 square =", "1 quadrado ="},
+    {"Click the map you want to calibrate.", "Clique no mapa que deseja calibrar."},
+    {"the centre of a hex", "o centro de um hexágono"},
+    {"a corner of a square", "um canto de um quadrado"},
+    {"then the centre of the hex next to it on the right", "depois o centro do hexágono vizinho à direita"},
+    {"then the next corner to its right", "depois o canto seguinte à direita"},
+    {"Step %1 of 4   %2", "Passo %1 de 4   %2"},
+    {"Click %1 in the highlighted quarter, %2. Zoom in for precision.", "Marque %1 no quarto destacado, %2. Amplie para ter precisão."},
+    {"The map's lines did not confirm the grid yet. Measure again in the highlighted quarter: %1, %2.",
+     "As linhas do mapa ainda não confirmaram a grade. Meça de novo no quarto destacado: %1, %2."},
+    {"Grid %1: cell of %2 px.\nCheck the yellow grid. Enter applies it. To refine, measure %3 in the outlined quarter, %4. Arrows move the grid (Shift: 0.1 px).",
+     "Grade %1: célula de %L2 px.\nConfira a grade amarela. Enter aplica. Para refinar, marque %3 no quarto contornado, %4. As setas movem a grade (Shift: 0,1 px)."},
+    {"Grid %1: cell of %2 px.\nAll 4 steps done. Enter applies it. Arrows move the grid (Shift: 0.1 px).",
+     "Grade %1: célula de %L2 px.\nOs 4 passos estão feitos. Enter aplica. As setas movem a grade (Shift: 0,1 px)."},
+    {"Click inside the highlighted quarter of the map.", "Clique dentro do quarto destacado do mapa."},
+    {"Now the centre of the hex next to it on the right.", "Agora o centro do hexágono vizinho à direita."},
+    {"Now the next corner to its right, on the same line.", "Agora o canto seguinte à direita, na mesma linha."},
+    {"from your measurement (still reading the map's lines…)", "pela sua medição (ainda lendo as linhas do mapa…)"},
+    {"matched to the map's lines, following them in %1 regions", "ajustada às linhas do mapa, seguindo-as em %1 regiões"},
+    {"matched to the map's lines", "ajustada às linhas do mapa"},
+    {"from the mean of your 4 measurements (the map's lines did not confirm it)", "pela média das suas 4 medições (as linhas do mapa não a confirmaram)"},
+    {"Looking for squares or hexes over the whole map…", "Procurando quadrados ou hexágonos no mapa inteiro…"},
+    {"of %1 found automatically%2", "de %1 encontrada automaticamente%2"},
+    {", following the lines in %1 regions", ", seguindo as linhas em %1 regiões"},
+    {"No grid found in the map's lines. Measure it: click a corner of a square (or a hex centre) in the highlighted quarter.",
+     "Nenhuma grade encontrada nas linhas do mapa. Meça: clique em um canto de um quadrado (ou no centro de um hexágono) no quarto destacado."},
+    {"Map calibrated: 1 %1 = %2 px = %3 %4.", "Mapa calibrado: 1 %1 = %L2 px = %L3 %4."},
+
+    // dialogs
+    {"Untitled", "Sem título"},
+    {"Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.gif);;All files (*)", "Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.gif);;Todos os arquivos (*)"},
+    {"Import maps", "Importar mapas"},
+    {"Save project", "Salvar projeto"},
+    {"Open project", "Abrir projeto"},
+    {"map.vaxmap", "mapa.vaxmap"},
+    {"Vax Maps project (*.vaxmap)", "Projeto do Vax Maps (*.vaxmap)"},
+    {"Export view", "Exportar vista"},
+    {"view.png", "vista.png"},
+    {"PNG image (*.png);;JPEG image (*.jpg)", "Imagem PNG (*.png);;Imagem JPEG (*.jpg)"},
+    {"Could not open %1: %2", "Não foi possível abrir %1: %2"},
+    {"Not a Vax Maps project: %1", "Não é um projeto do Vax Maps: %1"},
+    {"Could not save %1: %2", "Não foi possível salvar %1: %2"},
+    {"Could not write the image %1", "Não foi possível gravar a imagem %1"},
+    {"Save the changes to this project?", "Salvar as alterações deste projeto?"},
+    {"%1 image(s) of this project were not found. The first one is %2. Locate it now?",
+     "%1 imagem(ns) deste projeto não foi(ram) encontrada(s). A primeira é %2. Localizar agora?"},
+    {"Vax Maps did not close normally and left unsaved work from %1. Restore it? No discards that work.",
+     "O Vax Maps não foi fechado normalmente e deixou trabalho não salvo de %1. Restaurar? A resposta Não descarta esse trabalho."},
+
+    // Qt's own texts: dialog buttons, colour dialog, context menus of text fields, scroll bars
+    {"OK", "OK"},
+    {"Save All", "Salvar tudo"},
+    {"Open", "Abrir"},
+    {"&Yes", "&Sim"},
+    {"Yes to &All", "Sim para &todos"},
+    {"&No", "&Não"},
+    {"N&o to All", "Nã&o para todos"},
+    {"Abort", "Abortar"},
+    {"Retry", "Tentar novamente"},
+    {"Ignore", "Ignorar"},
+    {"Close", "Fechar"},
+    {"Discard", "Descartar"},
+    {"Help", "Ajuda"},
+    {"Reset", "Restaurar"},
+    {"Restore Defaults", "Restaurar padrões"},
+    {"Select Color", "Selecionar cor"},
+    {"&Basic colors", "Cores &básicas"},
+    {"&Custom colors", "Cores &personalizadas"},
+    {"&Pick Screen Color", "&Capturar cor da tela"},
+    {"&Add to Custom Colors", "&Adicionar às cores personalizadas"},
+    {"Cursor at %1, %2\nPress ESC to cancel", "Cursor em %1, %2\nPressione ESC para cancelar"},
+    {"Hu&e:", "&Matiz:"},
+    {"&Sat:", "&Sat:"},
+    {"&Val:", "&Val:"},
+    {"&Red:", "Ve&rmelho:"},
+    {"&Green:", "Ver&de:"},
+    {"Bl&ue:", "A&zul:"},
+    {"A&lpha channel:", "Canal a&lfa:"},
+    {"&HTML:", "&HTML:"},
+    {"&Undo", "&Desfazer"},
+    {"&Redo", "&Refazer"},
+    {"Cu&t", "Recor&tar"},
+    {"&Copy", "&Copiar"},
+    {"Copy &Link Location", "Copiar &endereço do link"},
+    {"&Paste", "C&olar"},
+    {"Select All", "Selecionar tudo"},
+    {"&Select All", "&Selecionar tudo"},
+    {"Insert Unicode control character", "Inserir caractere de controle Unicode"},
+    {"&Step up", "&Aumentar"},
+    {"Step &down", "&Diminuir"},
+    {"Scroll here", "Rolar até aqui"},
+    {"Left edge", "Borda esquerda"},
+    {"Top", "Topo"},
+    {"Right edge", "Borda direita"},
+    {"Bottom", "Fim"},
+    {"Page left", "Página à esquerda"},
+    {"Page up", "Página acima"},
+    {"Page right", "Página à direita"},
+    {"Page down", "Página abaixo"},
+    {"Scroll left", "Rolar para a esquerda"},
+    {"Scroll up", "Rolar para cima"},
+    {"Scroll right", "Rolar para a direita"},
+    {"Scroll down", "Rolar para baixo"},
+};
+
+bool on = false;
+QSet<QString> missing;
+
+const QHash<QString, QString> &dictionary() {
+    static const QHash<QString, QString> d = [] {
+        QHash<QString, QString> h;
+        for (const auto &row : table) h.insert(QString::fromUtf8(row[0]), QString::fromUtf8(row[1]));
+        return h;
+    }();
+    return d;
+}
+
+// Qt asks its translators for the texts of its own dialogs and menus; this one answers from the table.
+class QtTexts : public QTranslator {
+public:
+    QString translate(const char *, const char *source, const char *, int) const override {
+        return on ? dictionary().value(QString::fromUtf8(source)) : QString();
+    }
+    bool isEmpty() const override { return false; }
+};
+
+} // namespace
+
+bool portuguese() { return on; }
+
+QString T(const QString &english) {
+    if (!on) return english;
+    const auto it = dictionary().constFind(english);
+    if (it != dictionary().constEnd()) return *it;
+    static const QRegularExpression word("\\p{L}{2}");   // "×" or "↑" need no translation
+    if (english.contains(word)) missing.insert(english);
+    return english;
+}
+
+QString T(const char *english) { return T(QString::fromUtf8(english)); }
+
+void setPortuguese(bool p) {
+    static QtTexts *qt = nullptr;
+    if (!qt) QCoreApplication::installTranslator(qt = new QtTexts);
+    on = p;
+    QLocale::setDefault(p ? QLocale(QLocale::Portuguese, QLocale::Brazil) : QLocale::system());   // decimal comma in number fields
+    for (QWidget *w : QApplication::topLevelWidgets()) {
+        QEvent change(QEvent::LanguageChange);
+        QApplication::sendEvent(w, &change);   // reaches every child widget
+    }
+}
+
+QStringList untranslated() { return missing.values(); }
