@@ -1,5 +1,6 @@
 // `VaxMaps --selftest [outdir] [--bench]`: assert-based checks of the core logic and of real mouse
 // interaction on an offscreen window, plus screenshots in outdir.
+#include "calibration.h"
 #include "canvas.h"
 #include "items.h"
 #include "mainwindow.h"
@@ -55,11 +56,17 @@ void settle(Canvas *c) {
 
 QColor bg(int x, int y, int w, int h) { return QColor(40 + 160 * x / w, 90, 40 + 160 * y / h); }
 
-QString makeMap(const QString &dir, const QString &name, int w, int h, int cell, QPoint origin, bool alpha) {
+quint32 rnd() { static quint32 seed = 12345; seed = seed * 1664525u + 1013904223u; return seed >> 8; }
+
+QString makeMap(const QString &dir, const QString &name, int w, int h, int cell, QPoint origin, bool alpha, int noise = 0) {
     QImage img(w, h, alpha ? QImage::Format_ARGB32 : QImage::Format_RGB32);
     for (int y = 0; y < h; ++y) {
         auto *line = reinterpret_cast<QRgb *>(img.scanLine(y));
-        for (int x = 0; x < w; ++x) line[x] = bg(x, y, w, h).rgb();
+        for (int x = 0; x < w; ++x) {
+            const int n = noise ? int(rnd() % (2 * noise + 1)) - noise : 0;
+            const QColor c = bg(x, y, w, h);
+            line[x] = qRgb(qBound(0, c.red() + n, 255), qBound(0, c.green() + n, 255), qBound(0, c.blue() + n, 255));
+        }
     }
     QPainter p(&img);
     p.setPen(QPen(QColor(20, 20, 20), 3));
@@ -73,6 +80,39 @@ QString makeMap(const QString &dir, const QString &name, int w, int h, int cell,
     const QString path = dir + "/" + name;
     img.save(path, nullptr, 95);
     return path;
+}
+
+// Textured floor, walls at random places and (optionally) a grid of `cell` px starting at `origin`.
+QImage gridImage(int w, int h, double cell, QPointF origin, int lineAlpha, int noise) {
+    QImage img(w, h, QImage::Format_RGB32);
+    for (int y = 0; y < h; ++y) {
+        auto *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            const int v = 150 + int(rnd() % (2 * noise + 1)) - noise;
+            line[x] = qRgb(v, v * 9 / 10, v * 7 / 10);
+        }
+    }
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(QColor(50, 35, 25), 7));
+    p.setBrush(Qt::NoBrush);
+    for (int i = 0; i < 14; ++i) p.drawRect(QRectF(rnd() % w, rnd() % h, 80 + rnd() % (w / 3), 80 + rnd() % (h / 3)));
+    if (lineAlpha > 0) {
+        p.setPen(QPen(QColor(0, 0, 0, lineAlpha), 2));
+        for (double x = std::fmod(origin.x(), cell); x < w; x += cell) p.drawLine(QPointF(x, 0), QPointF(x, h));
+        for (double y = std::fmod(origin.y(), cell); y < h; y += cell) p.drawLine(QPointF(0, y), QPointF(w, y));
+    }
+    return img;
+}
+
+double offBy(double v, double target, double cell) {
+    const double r = std::fmod(std::fmod(v - target, cell) + cell, cell);
+    return std::min(r, cell - r);
+}
+
+void key(Canvas *c, int k, const QString &text = {}) {
+    QKeyEvent e(QEvent::KeyPress, k, Qt::NoModifier, text);
+    QApplication::sendEvent(c, &e);
 }
 
 void mouse(Canvas *c, QEvent::Type type, QPointF scenePos, Qt::MouseButton b = Qt::LeftButton, Qt::KeyboardModifiers mods = {}) {
@@ -113,14 +153,18 @@ bool pixelMatches(Canvas *c, MapItem *m, QPointF local, QColor expected, int tol
 void bench(MainWindow &w, const QString &dir) {
     say("\n== benchmark: 8 mapas de 6000 x 4000 px ==");
     QStringList paths;
-    for (int i = 0; i < 8; ++i) paths << makeMap(dir, QString("grande%1.jpg").arg(i), 6000, 4000, 70, QPoint(0, 0), false);
+    for (int i = 0; i < 8; ++i) paths << makeMap(dir, QString("grande%1.png").arg(i), 6000, 4000, 70, QPoint(0, 0), false, 12);
     w.newProject();
     QElapsedTimer t;
     t.start();
     QList<MapItem *> maps;
     for (int i = 0; i < paths.size(); ++i) maps << w.importMap(paths[i], QPointF((i % 4) * 6200, (i / 4) * 4200));
     waitFor([&] { for (auto *m : maps) if (!m->src->ready) return false; return true; }, 600000);
-    say(QString("pirâmides de tiles geradas: %1 s (primeira vez; depois vem do cache em disco)").arg(t.elapsed() / 1000.0, 0, 'f', 1));
+    qint64 bytes = 0;
+    for (auto *m : maps)
+        for (const QFileInfo &f : QDir(m->src->dir).entryInfoList(QDir::Files)) bytes += f.size();
+    say(QString("pirâmides de tiles geradas: %1 s, %2 MB em disco (primeira vez; depois vem do cache)")
+            .arg(t.elapsed() / 1000.0, 0, 'f', 1).arg(bytes / 1048576.0, 0, 'f', 0));
     auto frames = [&](const QString &label) {
         settle(w.canvas);
         QElapsedTimer f;
@@ -169,8 +213,33 @@ int runSelfTest(const QStringList &args) {
         check(eraseRuns(line, QPointF(50, 0), 200).isEmpty(), "borracha grande apaga o traço todo");
     }
     {
-        const Calibration c = Calibration::fromPoints(QPointF(50, 50), QPointF(1050, 53), 10, 1.5, "m");
-        check(qFuzzyCompare(c.cellPx, 100.0) && c.origin == QPointF(50, 50), "calibração por dois pontos (eixo dominante)");
+        const GridFit one = gridFromMeasurements({{QPointF(148, 152), QPointF(249, 152)}});
+        check(one.cell == 101 && offBy(one.origin.x(), 47, 101) < 1e-6 && offBy(one.origin.y(), 51, 101) < 1e-6,
+              "medição de 1 quadrado: tamanho e canto");
+        const GridFit wrap = gridFromMeasurements({{QPointF(0.5, 10), QPointF(100.5, 10)}, {QPointF(299.5, 10), QPointF(399.5, 10)}});
+        check(wrap.cell == 100 && offBy(wrap.origin.x(), 0, 100) < 0.01, "média circular dos cantos (0,5 e 99,5 dão 0)");
+
+        struct Case { const char *name; int w, h; double cell; QPointF origin; int alpha, noise; double hint; };
+        for (const Case &k : {Case{"grade nítida", 3000, 2000, 70.37, QPointF(23.4, 41.9), 200, 25, 66},
+                              Case{"grade fraca em textura", 3000, 2000, 88.6, QPointF(40.2, 12.7), 70, 45, 93},
+                              Case{"mapa grande reduzido para análise", 9000, 6000, 141.3, QPointF(60.2, 17.7), 200, 25, 135}}) {
+            const QImage img = gridImage(k.w, k.h, k.cell, k.origin, k.alpha, k.noise);
+            const QImage small = std::max(k.w, k.h) > 4096 ? img.scaled(4096, 4096, Qt::KeepAspectRatio, Qt::SmoothTransformation) : img;
+            const LineProfiles prof = lineProfiles(small, img.size());
+            const double tolCell = 0.03 * k.cell / 70, tolPos = 0.6 / prof.sx;
+            for (auto [how, g] : {std::pair{"ajuste à medição", fitGrid(prof, k.hint)}, std::pair{"detecção automática", detectGrid(prof)}}) {
+                const bool ok = g && std::abs(g->cell - k.cell) < tolCell && offBy(g->origin.x(), k.origin.x(), k.cell) < tolPos
+                                && offBy(g->origin.y(), k.origin.y(), k.cell) < tolPos;
+                check(ok, QString("calibração, %1, %2: %3").arg(k.name, how,
+                      g ? QString("quadrado %1 px (real %2), canto %3,%4 (real %5,%6), força %7")
+                              .arg(g->cell, 0, 'f', 3).arg(k.cell).arg(g->origin.x(), 0, 'f', 2).arg(g->origin.y(), 0, 'f', 2)
+                              .arg(k.origin.x()).arg(k.origin.y()).arg(g->strength, 0, 'f', 2)
+                        : QString("nada encontrado")));
+            }
+        }
+        const LineProfiles none = lineProfiles(gridImage(3000, 2000, 1, {}, 0, 45), QSize(3000, 2000));
+        const auto g = detectGrid(none);
+        check(!g, QString("mapa sem grade: detecção não inventa grade%1").arg(g ? QString(" (achou %1 px, força %2)").arg(g->cell).arg(g->strength) : ""));
     }
 
     // ---- app ----
@@ -185,10 +254,16 @@ int runSelfTest(const QStringList &args) {
     if (!m1 || !m2) return 1;
     check(waitFor([&] { return m1->src->ready && m2->src->ready; }, 120000), "pirâmide de tiles gerada em segundo plano");
     check(m1->pos() == QPointF(0, 0), "mapa centralizado no ponto de importação");
-    check(m1->src->levels == 4 && m1->src->ext == "jpg", "mapa opaco: 4 níveis, tiles JPEG");
-    check(m2->src->ext == "png", "mapa com transparência: tiles PNG");
-    const int tiles = QDir(m1->src->dir).entryList({"*.jpg"}).size();
+    check(m1->src->levels == 4 && m1->src->ext == "png" && m2->src->ext == "png", "4 níveis, tiles PNG");
+    const int tiles = QDir(m1->src->dir).entryList({"?_*_*.png"}).size();
     check(tiles == 24 + 6 + 2, QString("tiles em disco: %1 (esperado 32)").arg(tiles));
+    {
+        const QImage source(map1), tile(m1->src->dir + "/0_1_1.png");   // content 510..1019 plus 1 px border from 509
+        bool same = tile.size() == QSize(TILE + 2, TILE + 2);
+        for (int y = 0; same && y < tile.height(); ++y)
+            for (int x = 0; same && x < tile.width(); ++x) same = tile.pixel(x, y) == source.pixel(509 + x, 509 + y);
+        check(same, "tile idêntico à imagem original pixel a pixel (sem perdas)");
+    }
 
     // rendering: tile placement compared with the source image at several zoom levels
     for (double z : {1.0, 0.73, 0.3, 0.12}) {
@@ -206,8 +281,42 @@ int runSelfTest(const QStringList &args) {
         check(ok, QString("render no zoom %1%: cor confere com a imagem original (%2)").arg(z * 100).arg(got));
     }
 
-    // calibration + ruler + snap
-    m1->cal = Calibration::fromPoints(QPointF(50, 50), QPointF(1050, 50), 10, 1.5, "m");
+    // calibration through the tool, as a user does it
+    w.scene->clearSelection();
+    m1->setSelected(true);
+    c->setTool(Canvas::Calibrate);
+    Calibrator *cal = c->calibrator;
+    check(cal->target() == m1 && cal->isVisible(), "Calibrar com o mapa selecionado abre o painel nele");
+    mouse(c, QEvent::MouseButtonPress, m1->mapToScene(QPointF(2400, 300)));   // outside the top-left quarter
+    mouse(c, QEvent::MouseButtonRelease, m1->mapToScene(QPointF(2400, 300)));
+    mouse(c, QEvent::MouseButtonPress, m1->mapToScene(QPointF(152, 148)));    // ~2 px off the corner (150, 150)
+    mouse(c, QEvent::MouseButtonRelease, m1->mapToScene(QPointF(152, 148)));
+    mouse(c, QEvent::MouseButtonPress, m1->mapToScene(QPointF(247, 153)));
+    mouse(c, QEvent::MouseButtonRelease, m1->mapToScene(QPointF(247, 153)));
+    waitFor([&] { return !cal->busy(); }, 30000);
+    const auto r = cal->current();
+    check(r && std::abs(r->cell - 100) < 0.05 && offBy(r->origin.x(), 50.5, 100) < 1 && offBy(r->origin.y(), 50.5, 100) < 1 && m1->preview,
+          r ? QString("1 quadrado medido com 2 px de erro, ajustado às linhas: %1 px, canto %2,%3").arg(r->cell, 0, 'f', 3)
+                  .arg(r->origin.x(), 0, 'f', 2).arg(r->origin.y(), 0, 'f', 2)
+            : QString("medição não gerou grade"));
+    settle(c);
+    w.grab().save(out + "/vaxmaps-calibracao.png");
+    key(c, Qt::Key_Return);
+    check(m1->cal.valid() && std::abs(m1->cal.cellPx - 100) < 0.05 && !m1->preview && !m1->cal.showGrid && c->tool() == Canvas::Select
+              && !cal->isVisible(),
+          "Enter aplica: calibração salva, grade some, painel fecha");
+    m1->setSelected(true);
+    c->setTool(Canvas::Calibrate);
+    key(c, Qt::Key_F, "f");
+    waitFor([&] { return !cal->busy(); }, 60000);
+    const auto d = cal->current();
+    check(d && std::abs(d->cell - 100) < 0.05, d ? QString("detecção automática no mapa: %1 px").arg(d->cell, 0, 'f', 3) : QString("detecção automática falhou"));
+    const double before = m1->cal.cellPx;
+    key(c, Qt::Key_Escape);
+    check(m1->cal.cellPx == before && !m1->preview && c->tool() == Canvas::Select, "Esc cancela sem mudar a calibração");
+
+    // ruler + snap on a known calibration
+    m1->cal = Calibration{100, QPointF(50, 50), 1.5, "m"};
     const QString t = measureText(w.scene, m1->mapToScene(QPointF(50, 50)), m1->mapToScene(QPointF(350, 450)));
     check(t == "7,5 m · 5 quadrados", "régua: " + t);
     check(snapPoint(w.scene, m1->mapToScene(QPointF(148, 61))) == m1->mapToScene(QPointF(150, 50)), "snap na interseção mais próxima");

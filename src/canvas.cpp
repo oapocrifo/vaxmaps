@@ -1,12 +1,8 @@
 #include "canvas.h"
+#include "calibration.h"
 #include "items.h"
 #include "mapitem.h"
 
-#include <QDialog>
-#include <QDialogButtonBox>
-#include <QDoubleSpinBox>
-#include <QFormLayout>
-#include <QLineEdit>
 #include <QLocale>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -34,7 +30,7 @@ const char *toolHint(Canvas::Tool t) {
     case Canvas::Text: return "Texto: clique para escrever. Duplo clique edita um texto existente.";
     case Canvas::Note: return "Nota: clique para criar uma nota.";
     case Canvas::Measure: return "Régua: arraste para medir. Usa a calibração do mapa onde a medição começa.";
-    case Canvas::Calibrate: return "Calibrar: clique numa interseção da grade do mapa.";
+    case Canvas::Calibrate: return "Calibrar: siga as instruções do painel. Esc cancela.";
     case Canvas::ZoneRect: return "Zona retangular: arraste. Shift mantém quadrado.";
     case Canvas::ZoneEllipse: return "Zona circular: arraste. Shift mantém círculo.";
     case Canvas::ZonePoly: return "Zona por vértices: clique para cada vértice. Duplo clique, Enter ou clique no primeiro vértice fecha.";
@@ -80,8 +76,9 @@ Canvas::Canvas(QGraphicsScene *scene, QWidget *parent) : QGraphicsView(scene, pa
     setAcceptDrops(true);
     setFocusPolicy(Qt::StrongFocus);
 
-    measureLine = scene->addLine(QLineF(), QPen(QColor(255, 210, 60), 2, Qt::SolidLine, Qt::RoundCap));
-    measureLine->setPen([] { QPen p(QColor(255, 210, 60), 2); p.setCosmetic(true); return p; }());
+    QPen measurePen(QColor(255, 210, 60), 2);
+    measurePen.setCosmetic(true);
+    measureLine = scene->addLine(QLineF(), measurePen);
     measureLine->setZValue(1e6);
     measureLine->hide();
     measureLabel = new LabelItem;
@@ -90,14 +87,12 @@ Canvas::Canvas(QGraphicsScene *scene, QWidget *parent) : QGraphicsView(scene, pa
     eraserRing = scene->addEllipse(QRectF(), QPen(QColor(255, 255, 255, 180), 0));
     eraserRing->setZValue(1e6);
     eraserRing->hide();
-    calibMarker = scene->addEllipse(-5, -5, 10, 10, QPen(QColor(255, 210, 60), 2), Qt::NoBrush);
-    calibMarker->setFlag(QGraphicsItem::ItemIgnoresTransformations);
-    calibMarker->setZValue(1e6);
-    calibMarker->hide();
+    calibrator = new Calibrator(this);
 }
 
 void Canvas::setTool(Tool t) {
     cancelDrafts();
+    calibrator->stop();
     currentTool = t;
     setDragMode(t == Select ? RubberBandDrag : NoDrag);
     eraserRing->setVisible(false);
@@ -105,6 +100,10 @@ void Canvas::setTool(Tool t) {
     updateCursor();
     emit toolChanged(t);
     emit status(toolHint(t));
+    if (t == Calibrate) {
+        const QList<QGraphicsItem *> sel = scene()->selectedItems();
+        calibrator->start(sel.size() == 1 ? qgraphicsitem_cast<MapItem *>(sel[0]) : nullptr);
+    }
 }
 
 void Canvas::updateCursor() {
@@ -119,8 +118,6 @@ void Canvas::cancelDrafts() {
     draft = nullptr;
     stroke = nullptr;
     erasing = measuring = false;
-    calibPending = false;
-    calibMarker->hide();
 }
 
 bool Canvas::layerUsable() {
@@ -193,7 +190,7 @@ void Canvas::mousePressEvent(QMouseEvent *e) {
         updateMeasure(measureFrom);
         return;
     case Calibrate:
-        calibrateClick(sp);
+        calibrator->mousePress(sp);
         return;
     case ZoneRect:
     case ZoneEllipse:
@@ -309,7 +306,7 @@ void Canvas::eraseAt(QPointF sp) {
     const double r = 12 / zoom();
     QPainterPath area;
     area.addEllipse(sp, r, r);
-    for (QGraphicsItem *it : scene()->items(area)) {
+    for (QGraphicsItem *it : scene()->items(area, Qt::IntersectsItemBoundingRect)) {   // shape() strokes the whole path per call
         auto *s = qgraphicsitem_cast<StrokeItem *>(it);
         if (!s || !s->isVisible()) continue;
         if (auto *layer = static_cast<LayerItem *>(s->parentItem()); layer && layer->locked) continue;
@@ -333,51 +330,6 @@ void Canvas::updateMeasure(QPointF to) {
     measureLabel->setPos(to);
 }
 
-void Canvas::calibrateClick(QPointF sp) {
-    MapItem *m = mapAt(scene(), sp, false);
-    if (!m) { emit status("Clique sobre um mapa."); return; }
-    if (!calibPending || m != calibMap) {
-        calibMap = m;
-        calibA = m->mapFromScene(sp);
-        calibPending = true;
-        calibMarker->setPos(sp);
-        calibMarker->show();
-        emit status("Agora clique em outra interseção na mesma linha ou coluna, alguns quadrados adiante. Quanto mais longe, mais precisa.");
-        return;
-    }
-    const QPointF b = m->mapFromScene(sp);
-    calibPending = false;
-    calibMarker->hide();
-
-    QDialog dlg(this);
-    dlg.setWindowTitle("Calibrar mapa");
-    auto *form = new QFormLayout(&dlg);
-    auto *cells = new QDoubleSpinBox;
-    cells->setRange(0.5, 10000);
-    cells->setDecimals(1);
-    cells->setValue(m->cal.valid() ? std::round(qMax(std::abs(b.x() - calibA.x()), std::abs(b.y() - calibA.y())) / m->cal.cellPx) : 10);
-    auto *per = new QDoubleSpinBox;
-    per->setRange(0.001, 1e6);
-    per->setDecimals(3);
-    per->setValue(m->cal.unitsPerCell);
-    auto *unit = new QLineEdit(m->cal.unit);
-    form->addRow("Quadrados entre os pontos:", cells);
-    form->addRow("Distância de 1 quadrado:", per);
-    form->addRow("Unidade:", unit);
-    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    form->addRow(bb);
-    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    if (dlg.exec() != QDialog::Accepted) return;
-    const Calibration c = Calibration::fromPoints(calibA, b, cells->value(), per->value(), unit->text().trimmed());
-    if (c.cellPx < 1) { emit status("Os pontos estão próximos demais para calibrar."); return; }
-    m->cal = c;
-    m->update();
-    sceneEdited();
-    emit status(QString("Calibrado: 1 quadrado = %1 px = %2 %3. Setas ajustam a posição da grade (Shift: 0,1 px).")
-                    .arg(fmt(c.cellPx), fmt(c.unitsPerCell), c.unit));
-}
-
 void Canvas::deleteSelected() {
     bool any = false;
     for (QGraphicsItem *i : scene()->selectedItems())
@@ -392,6 +344,7 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
         return;
     }
     if (e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) { QGraphicsView::keyPressEvent(e); return; }
+    if (currentTool == Calibrate && calibrator->key(e)) return;
     // Tool letters live here instead of QAction shortcuts so typing in a text item never switches tools.
     static const QHash<int, Tool> keys{{Qt::Key_V, Select}, {Qt::Key_H, Pan}, {Qt::Key_P, Pen}, {Qt::Key_E, Eraser},
                                        {Qt::Key_T, Text}, {Qt::Key_N, Note}, {Qt::Key_M, Measure}, {Qt::Key_K, Calibrate},
@@ -420,17 +373,6 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
     case Qt::Key_Enter:
         if (draft && draft->shapeKind == ZoneItem::Poly) finishPoly();
         return;
-    case Qt::Key_Left: case Qt::Key_Right: case Qt::Key_Up: case Qt::Key_Down:
-        if (currentTool == Calibrate && calibMap && scene()->items().contains(calibMap) && calibMap->cal.valid()) {
-            const double step = (e->modifiers() & Qt::ShiftModifier) ? 0.1 : 1;
-            const int k = e->key();
-            calibMap->cal.origin += QPointF(k == Qt::Key_Left ? -step : k == Qt::Key_Right ? step : 0,
-                                            k == Qt::Key_Up ? -step : k == Qt::Key_Down ? step : 0);
-            calibMap->update();
-            sceneEdited();
-            return;
-        }
-        break;
     }
     QGraphicsView::keyPressEvent(e);
 }

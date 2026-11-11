@@ -226,7 +226,7 @@ MainWindow::MainWindow() {
     props->addRow("Unidade", unitEdit);
     gridCheck = new QCheckBox("Mostrar grade calibrada");
     props->addRow(gridCheck);
-    calHint = new QLabel("Calibrar (K): clique em duas interseções da grade na mesma linha, alguns quadrados de distância, e informe quantos quadrados há entre elas.");
+    calHint = new QLabel("Para medir a grade use a ferramenta Calibrar (K).");
     calHint->setWordWrap(true);
     props->addRow(calHint);
     propDock->setWidget(pw);
@@ -384,7 +384,7 @@ void MainWindow::importDialog() {
 }
 
 void MainWindow::newProject() {
-    canvas->cancelDrafts();
+    canvas->setTool(Canvas::Select);   // ends drafts and a calibration in progress
     qDeleteAll(layers);
     layers.clear();
     for (const char *name : {"Mapas", "Zonas", "Desenhos", "Textos"}) addLayer(name);
@@ -409,7 +409,7 @@ bool MainWindow::openProject(const QString &f) {
         QMessageBox::warning(this, "Vax Maps", "Arquivo de projeto inválido: " + f);
         return false;
     }
-    canvas->cancelDrafts();
+    canvas->setTool(Canvas::Select);   // ends drafts and a calibration in progress
     qDeleteAll(layers);
     layers = layersFromJson(doc.object(), scene, QFileInfo(f).absoluteDir());
     if (layers.isEmpty()) addLayer("Camada 1");

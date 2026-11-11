@@ -12,12 +12,12 @@ Canvas infinito para mapas de RPG: vários mapas grandes na mesma página, desen
 | P / E | Caneta / Borracha |
 | T / N | Texto / Nota (duplo clique edita) |
 | M | Régua |
-| K | Calibrar mapa (setas ajustam a grade, Shift = 0,1 px) |
+| K | Calibrar mapa (F detecta a grade, setas ajustam, Enter aplica, Esc cancela) |
 | R / O / G | Zona retângulo / círculo / vértices (Shift = quadrado/círculo) |
 | S | Snap na grade do mapa calibrado |
 
 - Importar mapas: arraste arquivos para a janela ou Ctrl+I. Formatos: PNG, JPG, WebP, TIFF, BMP, GIF.
-- Calibrar: com K, clique numa interseção da grade, depois noutra na mesma linha ou coluna alguns quadrados adiante, e informe quantos quadrados há entre elas e quanto vale um quadrado (ex.: 1,5 m). Cada mapa tem a sua calibração. A régua usa a do mapa onde a medição começa.
+- Calibrar (como no Atlas VTT): selecione o mapa e tecle K (ou tecle K e clique no mapa). Clique num canto de um quadrado no quarto destacado e depois no canto seguinte à direita. O programa ajusta a grade às linhas do mapa; se as linhas não confirmarem, pede outra medição no próximo quarto (até 4). F procura a grade sozinho. A grade amarela é a prévia: setas a movem (Shift = 0,1 px), Enter aplica, Esc cancela. Depois de aplicar a grade fica oculta; "Mostrar grade calibrada" em Propriedades a exibe. Cada mapa tem a sua calibração e a régua usa a do mapa onde a medição começa.
 - Zonas: nome, cor e descrição no painel Propriedades. Polígono: duplo clique numa aresta insere vértice, botão direito num vértice remove.
 - Camadas: novos itens vão para a camada ativa (destacada). "Travar" impede selecionar e mover, e os cliques passam para as camadas de baixo. Ctrl+M move a seleção para a camada ativa.
 
@@ -26,8 +26,8 @@ Canvas infinito para mapas de RPG: vários mapas grandes na mesma página, desen
 - Na importação, cada mapa vira uma pirâmide de tiles de 512 px (nível 0 = tamanho original, cada nível com metade do anterior), gravada em cache no disco. Só o menor nível fica sempre na memória.
 - O nível desenhado depende do zoom. Só os tiles visíveis são carregados, em threads, com o pedido mais recente primeiro. Enquanto um tile carrega, aparece o nível mais grosseiro já disponível.
 - Tiles decodificados ficam num cache LRU de 1 GB compartilhado entre todos os mapas.
-- Tiles JPEG para imagens opacas, PNG só quando há transparência. Cada tile leva 1 px dos vizinhos para não haver emendas.
-- Cache em `%LOCALAPPDATA%\VaxMaps\Vax Maps\cache\tiles`. Pode ser apagado com o programa fechado.
+- Tiles em PNG, sem perdas: no zoom máximo os pixels são os da imagem original. Cada tile leva 1 px dos vizinhos para não haver emendas.
+- Cache em `%LOCALAPPDATA%\VaxMaps\Vax Maps\cache\tiles2`, no teste um mapa texturizado de 6000 x 4000 px ocupou 32 MB. Pode ser apagado com o programa fechado.
 
 ## Projeto `.vaxmap`
 

@@ -50,7 +50,7 @@ QJsonObject itemToJson(QGraphicsItem *it, const QDir &base) {
     return o;
 }
 
-QGraphicsItem *itemFromJson(const QJsonObject &o, const QDir &base) {
+QGraphicsItem *itemFromJson(const QJsonObject &o, const QDir &base, bool fromV1) {
     const QString type = o["type"].toString();
     QGraphicsItem *it = nullptr;
     if (type == "map") {
@@ -61,7 +61,7 @@ QGraphicsItem *itemFromJson(const QJsonObject &o, const QDir &base) {
             m->cal.origin = QPointF(c["ox"].toDouble(), c["oy"].toDouble());
             m->cal.unitsPerCell = c["perCell"].toDouble(1.5);
             m->cal.unit = c["unit"].toString("m");
-            m->cal.showGrid = c["grid"].toBool();
+            m->cal.showGrid = c["grid"].toBool() && !fromV1;   // v1 turned the grid on by itself after every calibration
         }
         it = m;
     } else if (type == "stroke") {
@@ -96,18 +96,19 @@ QJsonObject layersToJson(const QList<LayerItem *> &layers, const QDir &base) {
             if (QJsonObject o = itemToJson(c, base); !o.isEmpty()) items << o;
         arr << QJsonObject{{"name", l->name}, {"visible", l->isVisible()}, {"locked", l->locked}, {"items", items}};
     }
-    return QJsonObject{{"format", "vaxmaps"}, {"version", 1}, {"layers", arr}};
+    return QJsonObject{{"format", "vaxmaps"}, {"version", 2}, {"layers", arr}};
 }
 
 QList<LayerItem *> layersFromJson(const QJsonObject &o, QGraphicsScene *scene, const QDir &base) {
     QList<LayerItem *> layers;
+    const bool fromV1 = o["version"].toInt() < 2;
     for (const QJsonValue &lv : o["layers"].toArray()) {
         const QJsonObject lo = lv.toObject();
         auto *l = new LayerItem(lo["name"].toString());
         scene->addItem(l);
         l->setZValue(layers.size());
         for (const QJsonValue &iv : lo["items"].toArray())
-            if (QGraphicsItem *it = itemFromJson(iv.toObject(), base)) it->setParentItem(l);
+            if (QGraphicsItem *it = itemFromJson(iv.toObject(), base, fromV1)) it->setParentItem(l);
         l->setVisible(lo["visible"].toBool(true));
         l->setLocked(lo["locked"].toBool());
         layers << l;

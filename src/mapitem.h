@@ -2,6 +2,7 @@
 #include <QGraphicsObject>
 #include <QImage>
 #include <QSharedPointer>
+#include <optional>
 
 // Content pixels per tile. Tile files carry 1 px from each neighbour so bilinear filtering shows no seams.
 constexpr int TILE = 510;
@@ -13,8 +14,6 @@ struct Calibration {
     QString unit = "m";
     bool showGrid = false;
     bool valid() const { return cellPx > 0; }
-    // a and b: two grid intersections on the same row or column, `cells` squares apart.
-    static Calibration fromPoints(QPointF a, QPointF b, double cells, double unitsPerCell, const QString &unit);
 };
 
 // One per source image, shared by every MapItem that shows it.
@@ -49,6 +48,7 @@ public:
 
     QSharedPointer<MapData> src;
     Calibration cal;
+    std::optional<Calibration> preview;   // grid being calibrated, drawn in yellow until applied
 
 private:
     QRectF tileRect(int level, int tx, int ty) const;

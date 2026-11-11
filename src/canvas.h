@@ -7,6 +7,7 @@ class MapItem;
 class StrokeItem;
 class ZoneItem;
 class LabelItem;
+class Calibrator;
 
 extern bool snapEnabled;
 MapItem *mapAt(QGraphicsScene *s, QPointF scenePos, bool calibratedOnly);
@@ -29,6 +30,7 @@ public:
     void cancelDrafts();
 
     LayerItem *activeLayer = nullptr;
+    Calibrator *calibrator;
     QColor color = QColor(230, 60, 60);
     double penWidth = 4;   // screen pixels at the zoom the stroke starts
 
@@ -55,7 +57,6 @@ private:
     QPointF snapped(QPointF p) const;
     void eraseAt(QPointF sp);
     void updateMeasure(QPointF to);
-    void calibrateClick(QPointF sp);
     void finishPoly();
     void updateCursor();
 
@@ -67,9 +68,6 @@ private:
     QPointF dragStart, measureFrom;
     QGraphicsLineItem *measureLine = nullptr;
     LabelItem *measureLabel = nullptr;
-    QGraphicsEllipseItem *eraserRing = nullptr, *calibMarker = nullptr;
-    MapItem *calibMap = nullptr;
-    QPointF calibA;
-    bool calibPending = false;
+    QGraphicsEllipseItem *eraserRing = nullptr;
     QHash<QGraphicsItem *, QPointF> pressPositions;
 };

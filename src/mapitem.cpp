@@ -124,10 +124,9 @@ Built buildPyramid(const QString &path, const QString &dir) {
     QImageReader reader(path);
     QImage img = reader.read();
     if (img.isNull()) { b.error = reader.errorString(); return b; }
-    const bool alpha = !opaque(img);
-    img = img.convertToFormat(alpha ? QImage::Format_ARGB32_Premultiplied : QImage::Format_RGB32);
+    img.convertTo(opaque(img) ? QImage::Format_RGB32 : QImage::Format_ARGB32_Premultiplied);   // in place: no second full-size copy
     b.size = img.size();
-    b.ext = alpha ? "png" : "jpg";   // JPEG tiles decode ~3x faster than PNG; PNG only where transparency exists
+    b.ext = "png";   // lossless: JPEG tiles showed block and colour artifacts at high zoom
     if (!QDir().mkpath(dir)) { b.error = "não foi possível criar " + dir; return b; }
     for (int level = 0;; ++level) {
         if (quitting) { b.error = "cancelado"; return b; }
@@ -141,7 +140,7 @@ Built buildPyramid(const QString &path, const QString &dir) {
             for (int tx = 0; tx * TILE < img.width(); ++tx) {
                 const QRect r = QRect(tx * TILE - 1, ty * TILE - 1, TILE + 2, TILE + 2) & img.rect();
                 const QString f = QString("%1/%2_%3_%4.%5").arg(dir).arg(level).arg(tx).arg(ty).arg(b.ext);
-                if (!img.copy(r).save(f, nullptr, alpha ? 90 : 88)) { b.error = "falha ao gravar o cache"; return b; }
+                if (!img.copy(r).save(f, nullptr, 80)) { b.error = "falha ao gravar o cache"; return b; }   // PNG quality 80 = zlib level 1: fast
             }
         img = img.scaled((img.width() + 1) / 2, (img.height() + 1) / 2, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     }
@@ -159,19 +158,15 @@ Built buildPyramid(const QString &path, const QString &dir) {
 int tileLoadsBusy() { return int(loader().pending.size()) + int(loader().inFlight.size()) + (loader().pumpQueued ? 1 : 0); }
 qint64 tileCacheBytes() { return qint64(loader().cache.totalCost()) * 1024; }
 
-Calibration Calibration::fromPoints(QPointF a, QPointF b, double cells, double unitsPerCell, const QString &unit) {
-    Calibration c;
-    // Dominant axis only: clicks a few px off the row or column must not change the cell size.
-    c.cellPx = qMax(std::abs(b.x() - a.x()), std::abs(b.y() - a.y())) / cells;
-    c.origin = a;
-    c.unitsPerCell = unitsPerCell;
-    c.unit = unit;
-    c.showGrid = true;
-    return c;
-}
-
 QString MapData::cacheRoot() {
-    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/tiles";
+    static const QString root = [] {
+        const QString base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        // v0.1 kept JPEG tiles in "tiles": drop them in the background.
+        if (QDir(base + "/tiles").exists())
+            QThreadPool::globalInstance()->start([base] { QDir(base + "/tiles").removeRecursively(); });
+        return base + "/tiles2";
+    }();
+    return root;
 }
 
 QSize MapData::levelSize(int level) const {
@@ -229,6 +224,7 @@ void MapData::shutdown() {
     quitting = true;
     builderPool()->waitForDone();
     loaderPool()->waitForDone();
+    QThreadPool::globalInstance()->waitForDone();   // grid analysis jobs post back to qApp
     registry.clear();
 }
 
@@ -318,15 +314,16 @@ void MapItem::paint(QPainter *p, const QStyleOptionGraphicsItem *opt, QWidget *w
                 for (int tx = x0; tx <= x1; ++tx)
                     if (!drawTile(p, level, tx, ty, true)) drawFallback(p, level, tx, ty);
         }
-        if (cal.showGrid && cal.valid() && cal.cellPx * s >= 4) {
+        const Calibration *g = preview ? &*preview : (cal.showGrid && cal.valid() ? &cal : nullptr);
+        if (g && g->cellPx * s >= 3) {
             const QRectF ex = opt->exposedRect & full;
-            const double c = cal.cellPx;
+            const double c = g->cellPx;
             QVector<QLineF> lines;
-            for (double x = cal.origin.x() + std::ceil((ex.left() - cal.origin.x()) / c) * c; x <= ex.right(); x += c)
+            for (double x = g->origin.x() + std::ceil((ex.left() - g->origin.x()) / c) * c; x <= ex.right(); x += c)
                 lines << QLineF(x, ex.top(), x, ex.bottom());
-            for (double y = cal.origin.y() + std::ceil((ex.top() - cal.origin.y()) / c) * c; y <= ex.bottom(); y += c)
+            for (double y = g->origin.y() + std::ceil((ex.top() - g->origin.y()) / c) * c; y <= ex.bottom(); y += c)
                 lines << QLineF(ex.left(), y, ex.right(), y);
-            p->setPen(QPen(QColor(0, 230, 255, 150), 0));
+            p->setPen(QPen(preview ? QColor(255, 220, 0, 220) : QColor(0, 230, 255, 150), 0));
             p->drawLines(lines);
         }
     }

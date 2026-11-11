@@ -2,6 +2,7 @@
 #include "canvas.h"
 
 #include <QGraphicsScene>
+#include <QFocusEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QPainter>
 #include <QPen>
@@ -124,6 +125,8 @@ void TextItem::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *e) {
 
 void TextItem::focusOutEvent(QFocusEvent *e) {
     QGraphicsTextItem::focusOutEvent(e);
+    // A context menu or switching windows is not the end of the edit (an empty new note would be deleted).
+    if (e->reason() == Qt::PopupFocusReason || e->reason() == Qt::ActiveWindowFocusReason) return;
     setTextInteractionFlags(Qt::NoTextInteraction);
     if (toPlainText().trimmed().isEmpty()) deleteLater();
 }
