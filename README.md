@@ -40,6 +40,10 @@ The window has no toolbars. Right click on the canvas opens the menu with every 
 | F | Fog brush (Alt + drag covers again) |
 | S | Snap to the calibrated grid |
 | L | Show or hide the layers panel |
+| Ctrl+N / Ctrl+O | New / Open |
+| Ctrl+S / Ctrl+Shift+S | Save / Save as |
+| Ctrl+I | Import maps |
+| Ctrl+Q | Quit |
 | Ctrl+Z / Ctrl+Y | Undo / Redo (100 steps) |
 | Ctrl+C / Ctrl+V / Ctrl+D | Copy / Paste at the pointer / Duplicate |
 | Ctrl+M | Move the selection to the active layer |
