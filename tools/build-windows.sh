@@ -27,5 +27,10 @@ x86_64-w64-mingw32-strip vaxmaps-build/VaxMaps.exe
 VERSION=$(sed -n 's/^project(VaxMaps VERSION \([0-9.]*\).*/\1/p' "$HERE/../CMakeLists.txt")
 makensis -V2 -DVERSION="$VERSION" -DEXE="$W/vaxmaps-build/VaxMaps.exe" -DREADME="$HERE/../README.md" \
  -DOUTFILE="$W/VaxMaps-$VERSION-setup.exe" "$HERE/installer.nsi"
+# portable copy: the program beside an empty VaxMaps-data folder, which keeps settings and cache there
+rm -rf "$W/portable" && mkdir -p "$W/portable/VaxMaps-$VERSION-portable/VaxMaps-data"
+cp "$W/vaxmaps-build/VaxMaps.exe" "$HERE/../README.md" "$W/portable/VaxMaps-$VERSION-portable/"
+(cd "$W/portable" && zip -q -r "$W/VaxMaps-$VERSION-portable.zip" "VaxMaps-$VERSION-portable")
+echo "$W/VaxMaps-$VERSION-portable.zip"
 echo "$W/vaxmaps-build/VaxMaps.exe"
 echo "$W/VaxMaps-$VERSION-setup.exe"

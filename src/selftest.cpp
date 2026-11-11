@@ -722,6 +722,11 @@ void version06(MainWindow &w, const QString &dir, const QString &map1, const QSt
         mouse(c, QEvent::MouseButtonRelease, b, Qt::LeftButton, Qt::AltModifier);
     };
 
+    // portable copy
+    QDir().mkpath(dir + "/portable/VaxMaps-data");
+    check(portableDataDir(dir + "/portable") == dir + "/portable/VaxMaps-data" && portableDataDir(dir).isEmpty(),
+          "the portable copy is recognised by the VaxMaps-data folder beside the program");
+
     // diagonal rules
     Calibration sq = Calibration::square(100, QPointF(0, 0));
     const double one = sq.steps(QPoint(0, 0), QPoint(3, 3));

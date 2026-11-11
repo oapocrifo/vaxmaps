@@ -1108,7 +1108,7 @@ void MainWindow::closeEvent(QCloseEvent *e) {
 }
 
 QString MainWindow::recoveryFile() {
-    return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/recovery.vaxmap";
+    return (dataDir.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) : dataDir) + "/recovery.vaxmap";
 }
 
 bool MainWindow::offerRecovery() {

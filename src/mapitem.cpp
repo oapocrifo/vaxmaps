@@ -22,6 +22,13 @@
 #include <cmath>
 #include <deque>
 
+QString dataDir;
+
+QString portableDataDir(const QString &programDir) {
+    const QString d = QDir(programDir).filePath("VaxMaps-data");
+    return QFileInfo(d).isDir() ? d : QString();
+}
+
 bool fogOpaque = false;
 bool syncTiles = false;
 
@@ -174,7 +181,7 @@ qint64 tileCacheBytes() { return qint64(loader().cache.totalCost()) * 1024; }
 
 QString MapData::cacheRoot() {
     static const QString root = [] {
-        const QString base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        const QString base = dataDir.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation) : dataDir + "/cache";
         // v0.1 kept JPEG tiles in "tiles": drop them in the background.
         if (QDir(base + "/tiles").exists())
             QThreadPool::globalInstance()->start([base] { QDir(base + "/tiles").removeRecursively(); });

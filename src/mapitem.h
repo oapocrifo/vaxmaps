@@ -61,6 +61,10 @@ private:
     QSize shownSize;
 };
 
+// Portable copy: a folder "VaxMaps-data" beside the program holds the settings, the tile cache and the recovery
+// copy, so nothing is written to the computer it runs on. Empty: the user's usual folders.
+extern QString dataDir;
+QString portableDataDir(const QString &programDir);   // the folder if it exists there, else empty
 extern bool fogOpaque;   // the GM's view: fog hides the map, or only darkens it
 extern bool syncTiles;   // tiles load before painting returns (export at full resolution)
 

@@ -57,6 +57,10 @@ Linux: `cmake -S . -B build && cmake --build build`.
 Tests: `VaxMaps --selftest <folder> [--bench]` (on Linux without a screen: `QT_QPA_PLATFORM=offscreen`).
 The distributed `.exe` is cross-built on Linux with static Qt 6.4.2 and MinGW: see `tools/`.
 
+## Portable copy (0.6.1)
+
+`VaxMaps-0.6.1-portable.zip` runs from any folder or USB drive without installing. Next to `VaxMaps.exe` it has a folder `VaxMaps-data`: while that folder is there, the settings (`VaxMaps-data\VaxMaps\Vax Maps.ini`), the tile cache and the recovery copy are kept in it, and nothing is written to the registry or the user's folders. Delete the folder and the program uses the usual places again. The portable copy does not associate .vaxmap files: open them from the program or drop them on its window.
+
 ## New in 0.6
 
 - **Tokens** (B): a click puts a numbered disc on the square clicked. Dragged, it lands on the centre of a square (on a corner when it is 2x2 or 4x4). Right click it for its name, colour and size (1x1 to 4x4). A ruler started on a token measures from its centre.

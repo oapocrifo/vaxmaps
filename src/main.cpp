@@ -21,6 +21,11 @@ int main(int argc, char **argv) {
     QApplication::setApplicationName(selfTest ? "Vax Maps selftest" : "Vax Maps");
     QApplication::setOrganizationName("VaxMaps");
     QApplication::setWindowIcon(QIcon(":/vaxmaps.png"));
+    if (!selfTest) dataDir = portableDataDir(QCoreApplication::applicationDirPath());
+    if (!dataDir.isEmpty()) {   // settings in an .ini there instead of the registry
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dataDir);
+    }
     const QString language = QSettings().value("language").toString();   // first run: the system's language
     setPortuguese(!selfTest && (language.isEmpty() ? QLocale::system().language() == QLocale::Portuguese : language == "pt"));
     QImageReader::setAllocationLimit(0);   // battle maps often exceed Qt's 256 MB decode limit
