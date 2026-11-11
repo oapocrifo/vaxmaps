@@ -1,0 +1,24 @@
+#!/bin/sh
+# Cross-compiles VaxMaps.exe on Ubuntu 24.04: static Qt 6.4.2 (qtbase + qtimageformats) with MinGW-w64.
+# apt install qt6-base-dev qt6-base-dev-tools g++-mingw-w64-x86-64-posix cmake ninja-build
+set -e
+HERE=$(cd "$(dirname "$0")" && pwd); W=${W:-$PWD/winbuild}; QT=$W/qt-win
+mkdir -p "$W" && cd "$W"
+[ -d qtbase ] || git clone --depth 1 --branch v6.4.2 https://github.com/qt/qtbase.git
+[ -d qtimageformats ] || git clone --depth 1 --branch v6.4.2 https://github.com/qt/qtimageformats.git
+COMMON="-G Ninja -DCMAKE_TOOLCHAIN_FILE=$HERE/mingw-toolchain.cmake -DCMAKE_BUILD_TYPE=Release
+ -DQT_HOST_PATH=/usr -DQT_HOST_PATH_CMAKE_DIR=/usr/lib/x86_64-linux-gnu/cmake"
+cmake -S qtbase -B qtbase-build $COMMON -DCMAKE_INSTALL_PREFIX=$QT -DBUILD_SHARED_LIBS=OFF -DFEATURE_static_runtime=ON \
+ -DQT_BUILD_EXAMPLES=OFF -DQT_BUILD_TESTS=OFF -DFEATURE_sql=OFF -DFEATURE_network=OFF -DFEATURE_dbus=OFF \
+ -DFEATURE_testlib=OFF -DFEATURE_opengl=OFF -DFEATURE_dynamicgl=OFF -DFEATURE_printsupport=OFF -DFEATURE_xml=OFF \
+ -DFEATURE_concurrent=OFF -DFEATURE_vulkan=OFF -DFEATURE_icu=OFF -DFEATURE_system_zlib=OFF -DFEATURE_system_png=OFF \
+ -DFEATURE_system_jpeg=OFF -DFEATURE_system_harfbuzz=OFF -DFEATURE_system_freetype=OFF -DFEATURE_system_pcre2=OFF \
+ -DFEATURE_system_doubleconversion=OFF
+ninja -C qtbase-build install
+cmake -S qtimageformats -B qtimg-build $COMMON -DCMAKE_PREFIX_PATH=$QT -DCMAKE_INSTALL_PREFIX=$QT \
+ -DFEATURE_jasper=OFF -DFEATURE_mng=OFF -DFEATURE_system_webp=OFF -DFEATURE_system_tiff=OFF
+ninja -C qtimg-build install
+cmake -S "$HERE/.." -B vaxmaps-build $COMMON -DCMAKE_PREFIX_PATH=$QT
+ninja -C vaxmaps-build
+x86_64-w64-mingw32-strip vaxmaps-build/VaxMaps.exe
+echo "$W/vaxmaps-build/VaxMaps.exe"

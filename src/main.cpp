@@ -1,0 +1,47 @@
+#include "mainwindow.h"
+#include "mapitem.h"
+
+#include <QApplication>
+#include <QImageReader>
+#include <QPalette>
+#include <QStyleFactory>
+
+int runSelfTest(const QStringList &args);
+
+int main(int argc, char **argv) {
+    QApplication app(argc, argv);
+    QApplication::setApplicationName("Vax Maps");
+    QApplication::setOrganizationName("VaxMaps");
+    QImageReader::setAllocationLimit(0);   // battle maps often exceed Qt's 256 MB decode limit
+
+    app.setStyle(QStyleFactory::create("Fusion"));
+    QPalette p;
+    p.setColor(QPalette::Window, QColor(45, 46, 51));
+    p.setColor(QPalette::WindowText, QColor(225, 225, 228));
+    p.setColor(QPalette::Base, QColor(32, 33, 37));
+    p.setColor(QPalette::AlternateBase, QColor(45, 46, 51));
+    p.setColor(QPalette::Text, QColor(225, 225, 228));
+    p.setColor(QPalette::Button, QColor(55, 56, 62));
+    p.setColor(QPalette::ButtonText, QColor(225, 225, 228));
+    p.setColor(QPalette::Highlight, QColor(70, 120, 200));
+    p.setColor(QPalette::HighlightedText, Qt::white);
+    p.setColor(QPalette::ToolTipBase, QColor(32, 33, 37));
+    p.setColor(QPalette::ToolTipText, QColor(225, 225, 228));
+    p.setColor(QPalette::PlaceholderText, QColor(140, 140, 145));
+    p.setColor(QPalette::Disabled, QPalette::Text, QColor(120, 120, 125));
+    p.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(120, 120, 125));
+    app.setPalette(p);
+
+    int rc;
+    if (app.arguments().contains("--selftest")) {
+        rc = runSelfTest(app.arguments());
+    } else {
+        MainWindow w;
+        w.show();
+        const QStringList args = app.arguments();
+        if (args.size() > 1 && args[1].endsWith(".vaxmap", Qt::CaseInsensitive)) w.openProject(args[1]);
+        rc = app.exec();
+    }
+    MapData::shutdown();
+    return rc;
+}
