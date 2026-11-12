@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.9
+## 0.9.1
+
+Grid calibration fixes. Projects from 0.9 open unchanged.
+
+- Fixed: detection (F, and on import) took squares 2 to 7 times too big on dungeon maps whose room walls line up every few squares: the walls outscored the faint squares between them. It now checks each grid found for lines between its lines, in every direction, and takes the squares. On 42 maps of Arden Vul, The Thicket and The Tomb of Kallia (40 with squares, 2 with hexes, cells of 59 to 348 px, rooms on black, caves, insets and legends), 0.9 found the right cell on 28, took a multiple on 9 and found nothing on 5; 0.9.1 finds it on all 42, within 0.1 % of the cell measured on the map (40 of them within 0.05 %).
+- Fixed: detection found nothing when two quarters showed something else that scored higher (a legend's table) or when one almost black quarter outscored the three others. Each quarter now needs a quarter of the best one's strength, and the next group of quarters is tried when the strongest has too little evidence. Faint squares among strong cave walls are found when 3 or 4 quarters agree on the cell within 1 %.
+- Fixed: F did nothing, and a measurement stayed on "still reading the map's lines…", when the lines of the map had left the panel's cache (3 other maps read after it was chosen). The lines are now read again.
+- Fixed: the grid bent by up to half a cell around titles, compasses and insets drawn at another scale (local corrections taken from them). A grid on which 6 in 10 measured regions sit is now kept regular; maps with separate plans on their own grids (a tower's floors) still get local corrections.
+- Detect in the calibration panel stays enabled before a map is chosen and says to click one (it did nothing).
+- Closing the program while grids are detected on import no longer waits for every remaining map.
 
 Projects from 0.8 open unchanged. Doors saved by 0.9 open in 0.8 as walls.
 

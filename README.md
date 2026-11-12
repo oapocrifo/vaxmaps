@@ -2,14 +2,14 @@
 
 Infinite canvas for tabletop RPG maps. Many large maps on one page, each with its own square or hex grid, rulers that count squares or hexes, links that jump between connected maps, tokens, fog of war, free drawing, text, notes, layers and zones.
 
-C++17, Qt 6 Widgets. Windows and Linux. Current version: 0.9.
+C++17, Qt 6 Widgets. Windows and Linux. Current version: 0.9.1.
 
 ## Download
 
 From the Releases page:
 
-- `VaxMaps-0.9-setup.exe`: installs for the current user (no administrator rights) in `%LOCALAPPDATA%\Programs\Vax Maps`, adds a Start menu entry and opens `.vaxmap` files on double click. Uninstall from Windows Settings.
-- `VaxMaps-0.9-portable.zip`: runs from any folder or USB drive. See [Portable copy](#portable-copy).
+- `VaxMaps-0.9.1-setup.exe`: installs for the current user (no administrator rights) in `%LOCALAPPDATA%\Programs\Vax Maps`, adds a Start menu entry and opens `.vaxmap` files on double click. Uninstall from Windows Settings.
+- `VaxMaps-0.9.1-portable.zip`: runs from any folder or USB drive. See [Portable copy](#portable-copy).
 
 The released files are not signed yet: Windows SmartScreen warns on the first start. The build can sign them, see [Code signing](#code-signing).
 
@@ -68,13 +68,13 @@ One calibration per map, so dungeon maps in squares and a surface map in hexes s
 - Hexes: click the centre of a hex, then the centre of the hex to its right. The angle tells pointy-top from flat-top.
 - The grid snaps to the map's own lines. The next quarter is then outlined so you can measure there to check, up to 4 steps. Enter applies at any step.
 - Maps with squares on part of them (a painted border, a title, rooms on black): S or "Skip quarter" goes past a quarter without squares or hexes. Once the lines confirm a grid, the quarters where they show none are skipped by themselves. A measurement that does not match a confirmed grid is left out and the grid stays.
-- F detects squares or hexes without clicks. Hexes from about 30 px wide on the analysed image (at most 4096 px on its longer side).
+- F detects squares or hexes without clicks. Hexes from about 30 px wide on the analysed image (at most 4096 px on its longer side). On dungeon maps whose room walls line up every few squares, it checks for lines between the walls and takes the squares, not the walls' spacing.
 - The cell size can be typed in px in the calibration panel (Use button). Hexes typed in are pointy-top or flat-top (Top: Pointy / Flat).
 - Maps imported without a grid get one found in their lines, in the background, one map after the other ("Detect grids on import" in the menu, Project tab, on by default). "Detect grids of the selection" does it for maps already on the canvas.
 - The calibration panel keeps the lines of the last 3 maps it read in memory (about 24 MB each).
 - The yellow grid is a preview. Arrows move it (Shift = 0.1 px), Enter applies, Esc cancels. After applying it is hidden. "Show the calibrated grid" in the map's properties shows it.
 - Detection and the fit use only the quarters of the map whose lines show the grid, so a grid on part of the map is found. A grid seen in one quarter only needs stronger lines.
-- Uneven grids: detection measures each quarter of the map and then regions of about 5 cells, so the grid follows maps whose cells change size or drift. The map's properties show "follows local variations" when this happened.
+- Uneven grids: detection measures each quarter of the map and then regions of about 5 cells, so the grid follows maps whose cells change size or drift, or separate plans each drawn on its own grid. The map's properties show "follows local variations" when this happened. When 6 in 10 regions sit on the regular grid, the grid stays regular: the others are a title, a compass or an inset.
 
 ### Ruler
 
@@ -142,7 +142,7 @@ Techniques taken from PureRef and Atlas VTT:
 
 ## Portable copy
 
-`VaxMaps-0.9-portable.zip` contains `VaxMaps.exe` and a `VaxMaps-data` folder. While that folder exists, settings (`VaxMaps-data\VaxMaps\Vax Maps.ini`), tile cache and recovery copy stay in it, and nothing is written to the registry or the user's folders. Delete the folder and the program uses the usual locations. The portable copy does not associate `.vaxmap` files: open them from the program or drop them on the window.
+`VaxMaps-0.9.1-portable.zip` contains `VaxMaps.exe` and a `VaxMaps-data` folder. While that folder exists, settings (`VaxMaps-data\VaxMaps\Vax Maps.ini`), tile cache and recovery copy stay in it, and nothing is written to the registry or the user's folders. Delete the folder and the program uses the usual locations. The portable copy does not associate `.vaxmap` files: open them from the program or drop them on the window.
 
 ## Build
 

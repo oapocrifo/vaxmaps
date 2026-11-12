@@ -182,6 +182,28 @@ QImage dungeonImage(int w, int h, int cell) {
     return img;
 }
 
+// Rooms on black whose walls all lie on every 4th line of the squares, faint squares on their floor (most rooms of
+// Arden Vul's levels): the walls line up as a grid 4 times the squares and outscored them.
+QImage roomsImage(int w, int h, double cell, QPointF origin) {
+    QImage img(w, h, QImage::Format_RGB32);
+    img.fill(QColor(45, 45, 45));
+    QPainterPath floor;
+    for (QRect r : {QRect(0, 0, 2, 1), QRect(3, 0, 2, 2), QRect(6, 0, 1, 1), QRect(8, 1, 1, 2), QRect(0, 2, 1, 2),
+                    QRect(2, 3, 3, 1), QRect(5, 4, 2, 2), QRect(1, 5, 2, 1), QRect(8, 5, 2, 1)})   // in units of 4 squares
+        floor.addRect(origin.x() + 4 * r.x() * cell, origin.y() + 4 * r.y() * cell, 4 * r.width() * cell, 4 * r.height() * cell);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.fillPath(floor, Qt::white);
+    p.setClipPath(floor);
+    p.setPen(QPen(QColor(150, 150, 150), 1));
+    for (double x = origin.x(); x < w; x += cell) p.drawLine(QPointF(x, 0), QPointF(x, h));
+    for (double y = origin.y(); y < h; y += cell) p.drawLine(QPointF(0, y), QPointF(w, y));
+    p.setClipping(false);
+    p.setPen(QPen(QColor(45, 45, 45), cell * 0.12));
+    p.drawPath(floor);
+    return img;
+}
+
 // Square grid with lines at the given positions; horizontal lines tilt by `slope` (y grows with x).
 QImage linesImage(int w, int h, const QVector<double> &xs, const QVector<double> &ys, double slope) {
     QImage img = gridImage(w, h, 1, {}, 0, 25);
@@ -1547,6 +1569,37 @@ void version09(MainWindow &w, const QString &dir, const QString &map1, const QSt
     w.dirty = false;
 }
 
+// What 0.9.1 fixed.
+void version091(MainWindow &w, const QString &dir) {
+    say("\n== 0.9.1 ==");
+    Canvas *c = w.canvas;
+    w.newProject();
+    c->activeLayer = w.layers[0];
+    QList<MapItem *> maps;
+    for (int i = 0; i < 4; ++i) {
+        const QString path = dir + QString("/cache%1.png").arg(i);
+        gridImage(2400, 1600, 60 + 7 * i, QPointF(10, 10), 200, 25).save(path);
+        maps << w.importMap(path, QPointF(i * 3000, 0));
+    }
+    waitFor([&] { for (MapItem *m : maps) if (!m->src->ready) return false; return true; }, 120000);
+    Calibrator *cal = c->calibrator;
+    auto calibrate = [&](MapItem *m) { w.scene->clearSelection(); m->setSelected(true); c->setTool(Canvas::Calibrate); };
+    calibrate(maps[0]);
+    cal->autoDetect();
+    waitFor([&] { return !cal->busy(); }, 60000);
+    // The lines of 3 other maps, asked for before the panel came back to the first map, arrive after it and push the
+    // first one out of the cache: 0.9 then waited for them for ever, and F did nothing.
+    for (int i : {1, 2, 3, 0}) calibrate(maps[i]);
+    pause(3000);
+    cal->autoDetect();
+    const bool done = waitFor([&] { return !cal->busy(); }, 60000);
+    const auto r = cal->current();
+    check(done && r && std::abs(r->cellSize() - 60) < 0.3,
+          QString("detection reads the map's lines again when they left the cache (%1)").arg(!done ? QString("still waiting") : r ? QString("%1 px").arg(r->cellSize(), 0, 'f', 2) : QString("nothing found")));
+    c->setTool(Canvas::Select);
+    w.dirty = false;
+}
+
 } // namespace
 
 int runSelfTest(const QStringList &args) {
@@ -1726,6 +1779,19 @@ int runSelfTest(const QStringList &args) {
                 invented << QString("%1 px, strength %2").arg(g->cal.cellSize(), 0, 'f', 1).arg(g->strength, 0, 'f', 2);
         }
         check(invented.isEmpty(), "6 maps without a grid (painted art, walls): detection invents none " + invented.join("; "));
+        for (double cell : {40.0, 55.3, 70.37}) {   // 0.9 found 4 or 2 times the squares, or none
+            const QPointF o(23.4, 41.9);
+            const auto g = detectGrid(analyse(roomsImage(3000, 2000, cell, o), QSize(3000, 2000)));
+            QVector<QPointF> inside;
+            for (double x = o.x() + cell; x < o.x() + 7 * cell; x += cell)   // the first room, 8 x 4 squares
+                for (double y = o.y() + cell; y < o.y() + 4 * cell; y += cell) inside << QPointF(x, y);
+            const double err = g ? latticeError(g->cal, inside) : 1;
+            check(g && !g->cal.isHex() && std::abs(g->cal.cellSize() - cell) < 0.004 * cell && err < 0.05 && g->regions == 0,
+                  QString("rooms whose walls are on every 4th line, squares of %1 px: %2").arg(cell).arg(
+                      g ? QString("cell %1 px, worst error %2 cells, %3 regions with local corrections (none expected)")
+                              .arg(g->cal.cellSize(), 0, 'f', 2).arg(err, 0, 'f', 3).arg(g->regions)
+                        : QString("nothing found")));
+        }
         // A grid that is not regular: cells grow from 66 to 74 px across the map and rows tilt by 0.25°.
         QVector<double> xs, ys;
         for (double x = 30, c = 66; x < 3000; x += c, c += 8.0 / 42) xs << x;
@@ -2093,6 +2159,7 @@ int runSelfTest(const QStringList &args) {
     version07(w, tmp.path(), map1);
     version08(w, tmp.path(), out);
     version09(w, tmp.path(), map1, out);
+    version091(w, tmp.path());
     if (args.contains("--bench")) bench(w, tmp.path());
     w.dirty = false;
     say(failures ? QString("\n%1 failure(s)").arg(failures) : "\nAll tests passed.");

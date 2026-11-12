@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QImage>
 #include <QSharedPointer>
+#include <atomic>
 #include <functional>
 #include <optional>
 #include "grid.h"
@@ -71,6 +72,7 @@ extern QString dataDir;
 QString portableDataDir(const QString &programDir);   // the folder if it exists there, else empty
 extern bool fogOpaque;   // the GM's view: fog hides the map, or only darkens it
 extern bool syncTiles;   // tiles load before painting returns (export at full resolution)
+extern std::atomic<bool> quitting;   // set by MapData::shutdown: background work stops early
 
 // Decoded tiles waiting or loading (for tests and benchmarks).
 int tileLoadsBusy();

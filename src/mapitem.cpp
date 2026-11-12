@@ -33,10 +33,10 @@ QString portableDataDir(const QString &programDir) {
 
 bool fogOpaque = false;
 bool syncTiles = false;
+std::atomic<bool> quitting{false};
 
 namespace {
 
-std::atomic<bool> quitting{false};
 QHash<QString, QSharedPointer<MapData>> registry;
 
 // One build at a time bounds peak memory: decoding a 10000 x 10000 map takes 400 MB.

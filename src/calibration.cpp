@@ -44,7 +44,8 @@ const std::pair<int, int> neighbours4[] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 
 struct Phase { double strength = 0, t = 0; };   // t: position of the lines along the normal, within [0, period)
 
-Phase fold(const float *sum, const float *count, int n, double t0, double period) {
+// `profile`, when given, gets the folded line strength per bin (t·bins/period modulo bins), smoothed.
+Phase fold(const float *sum, const float *count, int n, double t0, double period, std::vector<double> *profile = nullptr) {
     const int bins = std::max(8, int(period));
     if (n < 16 || period < 4 || period > n / 3.0) return {};
     std::vector<double> s(bins, 0), c(bins, 0);
@@ -66,6 +67,7 @@ Phase fold(const float *sum, const float *count, int n, double t0, double period
     std::vector<double> v(bins), sm(bins);
     for (int b = 0; b < bins; ++b) v[b] = c[b] > 0 ? s[b] / c[b] : mean;
     for (int b = 0; b < bins; ++b) sm[b] = (v[(b + bins - 1) % bins] + 2 * v[b] + v[(b + 1) % bins]) / 4;
+    if (profile) *profile = sm;
     std::vector<double> sorted = sm;
     std::nth_element(sorted.begin(), sorted.begin() + bins / 2, sorted.end());
     const double median = sorted[bins / 2];
@@ -174,6 +176,70 @@ int profileLength(const Analysis::Projection *proj) {
     return n;
 }
 
+// On a dungeon map the room walls line up every few cells and outscore the faint squares drawn between them, so a
+// multiple of the cell wins the search (Arden Vul, Level 6: 545 px for squares of 91). Returns the largest m (2 to 8)
+// such that, in every family, a line shows at each m-th of s's spacing (at least SUB_LINE of s's own lines above the
+// background) with background halfway between them; 1 when there is none.
+constexpr double SUB_LINE = 0.25, SUB_GAP = 0.15;   // on 42 maps: lines in between 0.4-0.9, gaps below 0.1, none ~0
+
+int subdivision(const Analysis &a, const Analysis::Projection *proj, Grid g, const Score &s, double lo) {
+    const QVector<Family> fams = families(a, g, s.cell);
+    std::vector<std::vector<double>> profiles(fams.size());
+    for (int f = 0; f < fams.size(); ++f) {
+        const Analysis::Projection &p = proj[fams[f].k];
+        fold(p.sum.constData(), p.count.constData(), int(p.sum.size()), p.t0, fams[f].period, &profiles[f]);
+        if (profiles[f].empty()) return 1;
+    }
+    for (int m = 8; m >= 2; --m) {
+        bool finer = s.cell / m >= lo;
+        for (int f = 0; f < fams.size() && finer; ++f) {
+            const std::vector<double> &b = profiles[f];
+            const int bins = int(b.size());
+            const double step = double(bins) / m;   // in bins
+            if (step < 4) { finer = false; break; }   // too few bins to tell a line from the gap beside it
+            auto around = [&](double x, int r, bool highest) {   // the highest or lowest bin within r of bin x
+                double v = highest ? -1e300 : 1e300;
+                for (int d = -r; d <= r; ++d) {
+                    const double w = b[((int(std::floor(x)) + d) % bins + bins) % bins];
+                    v = highest ? std::max(v, w) : std::min(v, w);
+                }
+                return v;
+            };
+            // From the strongest bin, not s's phase: that is a centroid, which texture beside a wide period pulls.
+            const int top = int(std::max_element(b.begin(), b.end()) - b.begin());
+            std::vector<double> sorted = b;
+            std::nth_element(sorted.begin(), sorted.begin() + bins / 2, sorted.end());
+            const double median = sorted[bins / 2], line = b[top] - median;
+            finer = line > 0;
+            for (int j = 0; j < m && finer; ++j) {
+                const double x = top + 0.5 + j * step;
+                finer = (j == 0 || around(x, 2, true) - median >= SUB_LINE * line) && around(x + step / 2, 1, false) - median <= SUB_GAP * line;
+            }
+        }
+        if (finer) return m;
+    }
+    return 1;
+}
+
+// s, or the finest grid whose lines include all of s's (see subdivision), refined. It keeps s's strength: its lines
+// are s's lines and more.
+Score finest(const Analysis &a, const Analysis::Projection *proj, Grid g, Score s, double lo) {
+    for (int m; s.cell > 0 && (m = subdivision(a, proj, g, s, lo)) > 1;) {
+        const double c = s.cell / m;
+        Score f = search(a, proj, g, c * 0.98, c * 1.02, 0.25 / profileLength(proj));
+        if (f.cell <= 0) {   // the folds at c miss MIN_LINED (few rooms show the squares): s's lines are on the grid
+            f.cell = c;
+            const QVector<Family> fams = families(a, g, c);
+            f.t.clear();
+            for (int i = 0; i < fams.size(); ++i) f.t << std::fmod(s.t[i], fams[i].period);
+        }
+        f.strength = std::max(f.strength, s.strength);
+        f.regions = s.regions;
+        s = f;
+    }
+    return s;
+}
+
 // Best grid of type g with a cell in [lo, hi] (image px) inside one region: coarse pass, then each peak refined;
 // a multiple of the grid has all its lines on the map's lines too, so the densest well-supported peak wins.
 Score detectIn(const Analysis &a, Grid g, double lo, double hi, int region) {
@@ -197,12 +263,16 @@ Score detectIn(const Analysis &a, Grid g, double lo, double hi, int region) {
     Score pick;
     for (const Score &s : peaks)
         if (s.strength >= DENSER_PREFERENCE * best && (pick.cell == 0 || s.cell < pick.cell)) pick = s;
-    return pick;
+    return finest(a, proj, g, pick, lo);
 }
 
 // One cell from the four quarters (quarters[i] is region i + 1). A map may show its grid in only some of them (a
 // border, a title, rooms on black): the quarters whose lines stand out at least half as much as the best one are
 // grouped by cell size (within 8 %: a grid that drifts stays one group), and the group with the most strength wins.
+// Detecting, a quarter needs only a quarter of the best one (and half the minimum): a quarter almost all black has
+// little line strength on average, so its few lines score twice the others' and left them out (rooms on every 4th
+// line of 70 px squares: 3 quarters at 70 px dropped). Measured, every quarter is searched near the same size, so
+// agreeing on it proves nothing and the stricter half stays.
 // A grid seen in one quarter only needs more evidence: twice the strength and, when detected, at least 8 lines
 // across the quarter (a few walls of a room can line up for 3 or 4); in two quarters, at least 6 lines across
 // each. The group's lines together, without the
@@ -211,41 +281,46 @@ Score detectIn(const Analysis &a, Grid g, double lo, double hi, int region) {
 Score combine(const Analysis &a, Grid g, const std::vector<Score> &quarters, bool detecting) {
     double top = 0;
     for (const Score &q : quarters) top = std::max(top, q.strength);
+    const double least = detecting ? std::max(0.25 * top, 0.5 * MIN_DETECTED) : 0.5 * top;
     std::vector<int> kept;
     for (int i = 0; i < int(quarters.size()); ++i)
-        if (quarters[i].cell > 0 && quarters[i].strength > 0 && quarters[i].strength >= 0.5 * top) kept.push_back(i);
-    std::vector<int> group;
-    double groupStrength = 0;
+        if (quarters[i].cell > 0 && quarters[i].strength > 0 && quarters[i].strength >= least) kept.push_back(i);
+    std::vector<std::pair<double, std::vector<int>>> groups;   // strength, members
     for (int i : kept) {
         std::vector<int> members;
         double sum = 0;
         for (int j : kept)
             if (std::abs(quarters[j].cell / quarters[i].cell - 1) <= 0.08) { members.push_back(j); sum += quarters[j].strength; }
-        if (sum > groupStrength) { group = members; groupStrength = sum; }
+        groups.push_back({sum, members});
     }
-    if (group.empty()) return {};
-    std::vector<double> cells, strengths;
-    int mask = 0;
-    for (int i : group) {
-        cells.push_back(quarters[i].cell);
-        strengths.push_back(quarters[i].strength);
-        mask |= 1 << (i + 1);
-    }
-    const size_t mid = (cells.size() - 1) / 2;   // the lower median strength: in a group of two, both must show the grid
-    std::nth_element(cells.begin(), cells.begin() + cells.size() / 2, cells.end());
-    std::nth_element(strengths.begin(), strengths.begin() + mid, strengths.end());
-    const double cell = cells[cells.size() / 2], strength = strengths[mid];
+    // The strongest group that has the evidence its size asks for: a legend or a title in two quarters (City Ruins:
+    // the rows of its table, 705 px) may outscore the squares of the other two and still not count as a grid.
+    std::stable_sort(groups.begin(), groups.end(), [](const auto &x, const auto &y) { return x.first > y.first; });
     const double side = std::min(a.gray.width(), a.gray.height()) / 2.0 / ((a.sx + a.sy) / 2);   // a quarter's, image px
-    if (group.size() == 1 && (detecting ? strength < 2 * MIN_DETECTED || cell > side / 8 : strength < 2 * MIN_HINTED)) return {};
-    if (group.size() == 2 && detecting && cell > side / 6) return {};
-    const Lines lines = linesOf(a, mask);
-    Score refined = search(a, lines.proj, g, cell * 0.98, cell * 1.02, 0.25 / profileLength(lines.proj));
-    if (refined.strength < 0.6 * strength) {
-        refined = score(a, lines.proj, g, cell);
-        refined.strength = strength;
+    for (const auto &[sum, group] : groups) {
+        std::vector<double> cells, strengths;
+        int mask = 0;
+        for (int i : group) {
+            cells.push_back(quarters[i].cell);
+            strengths.push_back(quarters[i].strength);
+            mask |= 1 << (i + 1);
+        }
+        const size_t mid = (cells.size() - 1) / 2;   // the lower median strength: in a group of two, both must show the grid
+        std::nth_element(cells.begin(), cells.begin() + cells.size() / 2, cells.end());
+        std::nth_element(strengths.begin(), strengths.begin() + mid, strengths.end());
+        const double cell = cells[cells.size() / 2], strength = strengths[mid];
+        if (group.size() == 1 && (detecting ? strength < 2 * MIN_DETECTED || cell > side / 8 : strength < 2 * MIN_HINTED)) continue;
+        if (group.size() == 2 && detecting && cell > side / 6) continue;
+        const Lines lines = linesOf(a, mask);
+        Score refined = search(a, lines.proj, g, cell * 0.98, cell * 1.02, 0.25 / profileLength(lines.proj));
+        if (refined.strength < 0.6 * strength) {
+            refined = score(a, lines.proj, g, cell);
+            refined.strength = strength;
+        }
+        refined.regions = mask;
+        return refined;
     }
-    refined.regions = mask;
-    return refined;
+    return {};
 }
 
 double wrap(double v, double period) {   // into [-period/2, period/2)
@@ -387,6 +462,13 @@ int localField(const Analysis &a, Calibration &c, double globalStrength) {
     int measured = 0;
     for (double w : weight) measured += w > 0;
     if (measured < std::max(3, cols * rows / 4)) return 0;
+    // A regular grid, as most maps drawn on a computer have, needs no corrections. When 6 in 10 of the measured blocks
+    // sit within a tenth of a cell of it, the others are a title, a compass, a side view or an inset drawn at another
+    // scale, and corrections taken from them bent the grid around them by up to half a cell (Arden Vul, Levels 3 and
+    // 10). A grid that drifts, or separate plans each on its own phase (a tower's floors: 5 in 10), keep them.
+    int onGrid = 0;
+    for (int i = 0; i < cols * rows; ++i) onGrid += weight[i] > 0 && QLineF(QPointF(), d[i]).length() <= 0.1 * cellA;
+    if (onGrid >= 0.6 * measured) return 0;
     for (;;) {
         int start = -1;
         for (int i = 0; i < cols * rows; ++i)
@@ -591,8 +673,13 @@ std::optional<GridFit> detectGrid(const Analysis &a) {
         if (hi <= lo) continue;
         std::vector<Score> quarters;
         for (int r = 1; r <= 4; ++r) quarters.push_back(detectIn(a, g, lo, hi, r));
-        const Score s = combine(a, g, quarters, true);
-        if (s.strength >= MIN_DETECTED && s.t.size() >= 2) found.push_back({g, s});
+        Score s = combine(a, g, quarters, true);
+        if (s.regions) s = finest(a, linesOf(a, s.regions).proj, g, s, lo);   // quarters that all found the same multiple
+        // Faint squares among strong cave walls score low (Thicket Caverns: 1.25), but 3 or 4 quarters that find the
+        // same cell on their own, within 1 %, do not happen by chance.
+        int agree = 0;
+        for (const Score &q : quarters) agree += s.cell > 0 && q.cell > 0 && std::abs(q.cell / s.cell - 1) <= 0.01;
+        if (s.strength >= (agree >= 3 ? 0.75 : 1.0) * MIN_DETECTED && s.t.size() >= 2) found.push_back({g, s});
     }
     // The edges of hexes w wide also line up as hexes of the other orientation √3·w wide: try the smaller one.
     for (size_t i = 0, n = found.size(); i < n; ++i)
@@ -659,7 +746,7 @@ void detectGrids(const QList<MapItem *> &maps, std::function<void(int, int)> don
     if (todo.isEmpty()) return done(0, 0);
     QThreadPool::globalInstance()->start([todo, paths, done] {
         auto found = QSharedPointer<int>::create(0);
-        for (int i = 0; i < paths.size(); ++i) {
+        for (int i = 0; i < paths.size() && !quitting; ++i) {   // closing the program does not wait for the rest
             const std::optional<GridFit> g = detectGrid(loadAnalysis(paths[i]));
             QMetaObject::invokeMethod(qApp, [m = todo[i], g, found] {
                 if (!g || !m || m->cal.valid()) return;   // deleted, or calibrated by hand meanwhile
@@ -783,7 +870,7 @@ void Calibrator::start(MapItem *selected) {
     popUp(QPoint(6, 6), QPoint(-14, 0));
     title->setText(T("Calibrate grid"));
     progress->clear();
-    for (MenuButton *b : {applyButton, againButton, detectButton, skipButton}) b->setEnabled(false);
+    for (MenuButton *b : {applyButton, againButton, skipButton}) b->setEnabled(false);   // Detect says to pick a map first
     applyButton->setChecked(false);
     perCell->setValue(1.5);
     unit->setText("m");
@@ -812,7 +899,6 @@ void Calibrator::choose(MapItem *m) {
         perCell->setValue(m->cal.unitsPerCell);
         unit->setText(m->cal.unit);
     }
-    detectButton->setEnabled(true);
     againButton->setEnabled(true);
     requestAnalysis();
     setHex(m->cal.valid() && m->cal.isHex());
@@ -973,6 +1059,7 @@ void Calibrator::evaluate() {
     const auto a = analysisCache.value(map->src->path);
     if (!a) {   // never blocks: the measurement is shown now and refined when the lines are read
         waitingAnalysis = true;
+        requestAnalysis();   // the lines may have left the cache (other maps were read meanwhile)
         setResult(measuredGrid, false, T("from your measurement (still reading the map's lines…)"));
         return;
     }
@@ -1062,12 +1149,15 @@ void Calibrator::setResult(const Calibration &c, bool fromLines, const QString &
 }
 
 void Calibrator::autoDetect() {
-    if (!map || detecting) return;
+    if (!map) return setText(T("Click the map you want to calibrate."));
+    if (detecting) return;
     reset();
     detecting = true;
     progress->clear();
     setText(T("Looking for squares or hexes over the whole map…"));
-    if (analysisCache.contains(map->src->path)) runDetection();   // else analysisReady() starts it
+    // Read again when the lines left the cache: 0.9 waited for a reading that never came and F did nothing after.
+    if (analysisCache.contains(map->src->path)) runDetection();
+    else requestAnalysis();   // analysisReady() starts the detection
 }
 
 void Calibrator::runDetection() {
