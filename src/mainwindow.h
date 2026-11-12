@@ -19,6 +19,7 @@ class QSlider;
 class QTreeWidget;
 class QVBoxLayout;
 class SwatchRow;
+class Tabs;
 class Toast;
 
 class MainWindow : public QMainWindow {
@@ -70,6 +71,7 @@ public:
     QList<LayerItem *> layers;   // bottom first
     bool dirty = false;
     Panel *menu, *props, *layersPanel;
+    Tabs *menuTabs;
     Toast *toast, *zoomToast;
     QAction *fullScreenAction;
 
@@ -119,6 +121,7 @@ private:
     QSlider *widthSlider;
     QLabel *widthLabel;
     QWidget *propsContent = nullptr;
+    int lastMapTab = 0, lastTokenTab = 0;   // the properties popups open on the tab used last
     QPoint menuAt;               // where the menu was opened: Paste puts the items there
     QList<QList<QByteArray>> undoStack, redoStack;   // the last of undoStack is the current state
     QTimer undoTimer, autosaveTimer;

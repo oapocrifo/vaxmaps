@@ -10,6 +10,7 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QScrollBar>
+#include <QSettings>
 #include <QUuid>
 #include <QWheelEvent>
 #include <cmath>
@@ -201,7 +202,13 @@ void Canvas::setTool(Tool t) {
     if (t == Link && !linksVisible) showLinks(true);
     updateCursor();
     emit toolChanged(t);
-    emit status(toolHint(t));
+    // The whole hint the first 3 times a tool is picked, then only its name and key: the toast stays out of the way.
+    QSettings settings;
+    const QString seen = QString("hints/%1").arg(int(t));
+    const int times = settings.value(seen, 0).toInt();
+    const char keys[] = "VHPETNMKROGJBF";   // order of Canvas::Tool
+    if (times < 3) settings.setValue(seen, times + 1);
+    emit status(times < 3 ? toolHint(t) : QString("%1 · %2").arg(toolHint(t).section(':', 0, 0)).arg(QChar(keys[t])));
     if (t == Calibrate) {
         const QList<QGraphicsItem *> sel = scene()->selectedItems();
         calibrator->start(sel.size() == 1 ? qgraphicsitem_cast<MapItem *>(sel[0]) : nullptr);

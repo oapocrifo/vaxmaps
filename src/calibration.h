@@ -37,6 +37,7 @@ struct GridFit {
     Calibration cal;     // image px
     double strength = 0; // how far the lines stand out from the rest of the map (0 = not at all)
     int regions = 0;     // map regions whose local correction was measured from the lines
+    int quarters = 0;    // bit q: quarter q of the map (0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right) shows the grid
 };
 // The grid of `type` within 13 % of `cellHint` (image px) that the map's lines support.
 std::optional<GridFit> fitGrid(const Analysis &a, Calibration::Grid type, double cellHint);
@@ -65,6 +66,8 @@ public:
     const std::optional<Calibration> &current() const { return result; }
     bool confirmed() const { return matched; }
     int measured() const { return int(measurements.size()); }
+    int step() const { return stepAt; }   // quarter of the next measurement, 0-3; 4 when all were measured or skipped
+    void skip();                          // the quarter has no grid: on to the next
     bool busy() const { return waitingAnalysis || detecting || fitting; }
     void useCell(double size);   // a grid of this cell size, typed instead of measured
 
@@ -92,10 +95,12 @@ private:
     QString how;
     bool hex = false, matched = false, waitingAnalysis = false, detecting = false, fitting = false;
     int fitGeneration = 0;   // a fit that comes back after the measurements changed is dropped
+    int stepAt = 0, skipped = 0;   // skipped: bit q for quarter q
+    int lineQuarters = 0;          // quarters where the map's lines show the grid matched (GridFit::quarters)
     QList<QGraphicsItem *> marks;   // children of the map: deleted with it
 
     QLabel *title, *instruction, *progress, *unitsLabel;
-    MenuButton *squaresButton, *hexButton, *detectButton, *applyButton, *againButton;
+    MenuButton *squaresButton, *hexButton, *detectButton, *skipButton, *applyButton, *againButton;
     QDoubleSpinBox *perCell, *cellSpin;
     QLineEdit *unit;
 };

@@ -2,14 +2,14 @@
 
 Infinite canvas for tabletop RPG maps. Many large maps on one page, each with its own square or hex grid, rulers that count squares or hexes, links that jump between connected maps, tokens, fog of war, free drawing, text, notes, layers and zones.
 
-C++17, Qt 6 Widgets. Windows and Linux. Current version: 0.7.
+C++17, Qt 6 Widgets. Windows and Linux. Current version: 0.8.
 
 ## Download
 
 From the Releases page:
 
-- `VaxMaps-0.7-setup.exe`: installs for the current user (no administrator rights) in `%LOCALAPPDATA%\Programs\Vax Maps`, adds a Start menu entry and opens `.vaxmap` files on double click. Uninstall from Windows Settings.
-- `VaxMaps-0.7-portable.zip`: runs from any folder or USB drive. See [Portable copy](#portable-copy).
+- `VaxMaps-0.8-setup.exe`: installs for the current user (no administrator rights) in `%LOCALAPPDATA%\Programs\Vax Maps`, adds a Start menu entry and opens `.vaxmap` files on double click. Uninstall from Windows Settings.
+- `VaxMaps-0.8-portable.zip`: runs from any folder or USB drive. See [Portable copy](#portable-copy).
 
 The program is not signed. Windows SmartScreen warns on the first start.
 
@@ -20,7 +20,7 @@ The program is not signed. Windows SmartScreen warns on the first start.
 3. Press M and drag to measure in squares or hexes.
 4. Ctrl+S saves the project as `.vaxmap`.
 
-The window has no toolbars. Right click on the canvas opens the menu with every tool and command. Right click on a selected item opens its properties. F1 lists every key and mouse gesture.
+The window has no toolbars. Right click on the canvas opens the menu, in four tabs: Tools, Edit, View, Project. It opens on the tab used last. Right click on a selected item opens its properties (maps and tokens in two tabs). F1 lists every key and mouse gesture.
 
 ## Keys
 
@@ -32,7 +32,7 @@ The window has no toolbars. Right click on the canvas opens the menu with every 
 | P / E | Pen / Eraser |
 | T / N | Text / Note (double click edits) |
 | M | Ruler |
-| K | Calibrate a map's grid (F detects it, arrows nudge, Enter applies, Esc cancels) |
+| K | Calibrate a map's grid (F detects it, S skips a quarter, arrows nudge, Enter applies, Esc cancels) |
 | R / O / G | Rectangle / circle / vertex zone (Shift keeps it square or round) |
 | J | New link between maps |
 | Shift+J | Show or hide links |
@@ -64,9 +64,11 @@ One calibration per map, so dungeon maps in squares and a surface map in hexes s
 - Squares: click a corner of a square in the highlighted quarter, then the next corner to its right.
 - Hexes: click the centre of a hex, then the centre of the hex to its right. The angle tells pointy-top from flat-top.
 - The grid snaps to the map's own lines. The next quarter is then outlined so you can measure there to check, up to 4 steps. Enter applies at any step.
+- Maps with squares on part of them (a painted border, a title, rooms on black): S or "Skip quarter" goes past a quarter without squares or hexes. Once the lines confirm a grid, the quarters where they show none are skipped by themselves. A measurement that does not match a confirmed grid is left out and the grid stays.
 - F detects squares or hexes without clicks. Hexes from about 30 px wide on the analysed image (at most 4096 px on its longer side).
 - The cell size can be typed in px in the calibration panel (Use button). Hexes typed in are pointy-top.
 - The yellow grid is a preview. Arrows move it (Shift = 0.1 px), Enter applies, Esc cancels. After applying it is hidden. "Show the calibrated grid" in the map's properties shows it.
+- Detection and the fit use only the quarters of the map whose lines show the grid, so a grid on part of the map is found. A grid seen in one quarter only needs stronger lines.
 - Uneven grids: detection measures each quarter of the map and then regions of about 5 cells, so the grid follows maps whose cells change size or drift. The map's properties show "follows local variations" when this happened.
 
 ### Ruler
@@ -85,9 +87,9 @@ B and a click puts a numbered disc on the clicked square. A dragged token lands 
 
 ### Fog of war
 
-In a map's properties: Cover the map with fog. The fog brush (F) reveals where it passes. Alt + drag covers again. Brush size is 10 times the pen width. "Opaque fog" in the menu switches between hiding the map and darkening it, saved with the project.
+In a map's properties, Fog of war tab: Cover the map with fog. The fog brush (F) reveals where it passes. Alt + drag covers again. Brush size is 10 times the pen width. "Opaque fog" (menu, View tab, or the map's Fog of war tab) switches between hiding the map and darkening it, saved with the project.
 
-Token vision: in a token's properties, Vision. Distance is in the units of the calibrated map under the token (9 m on a map where 1 square = 1.5 m reveals 6 squares). Circle or Cone. A cone has a width (10° to 360°) and a direction (slider, or [ and ] with the token selected: 15° per press, 45° with Shift). The fog clears when the token is placed, along the way while it is dragged, and when its vision changes. Cleared fog stays clear.
+Token vision: in a token's properties, Vision tab. Distance is in the units of the calibrated map under the token (9 m on a map where 1 square = 1.5 m reveals 6 squares). Circle or Cone. A cone has a width (10° to 360°) and a direction (slider, or [ and ] with the token selected: 15° per press, 45° with Shift). The fog clears when the token is placed, along the way while it is dragged, and when its vision changes. Cleared fog stays clear.
 
 Walls: right click a pen stroke, "Wall: blocks token vision" (applies to every selected stroke). The vision stops at the stroke's line. Gaps between strokes let it through. The area is drawn dashed while the token is selected, and a cone is always drawn faintly so its direction shows.
 
@@ -131,7 +133,7 @@ Techniques taken from PureRef and Atlas VTT:
 
 ## Portable copy
 
-`VaxMaps-0.7-portable.zip` contains `VaxMaps.exe` and a `VaxMaps-data` folder. While that folder exists, settings (`VaxMaps-data\VaxMaps\Vax Maps.ini`), tile cache and recovery copy stay in it, and nothing is written to the registry or the user's folders. Delete the folder and the program uses the usual locations. The portable copy does not associate `.vaxmap` files: open them from the program or drop them on the window.
+`VaxMaps-0.8-portable.zip` contains `VaxMaps.exe` and a `VaxMaps-data` folder. While that folder exists, settings (`VaxMaps-data\VaxMaps\Vax Maps.ini`), tile cache and recovery copy stay in it, and nothing is written to the registry or the user's folders. Delete the folder and the program uses the usual locations. The portable copy does not associate `.vaxmap` files: open them from the program or drop them on the window.
 
 ## Build
 

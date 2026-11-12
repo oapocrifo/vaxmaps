@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8
+
+Projects from 0.7 open unchanged.
+
+- Fixed: grid calibration on maps whose squares do not cover the whole map (a painted border, a title band, squares on one side, rooms on black). Detection (F) and the fit of a measurement took the median cell of the four quarters of the map, so two quarters without squares gave a random cell: 0.7 took 70.37 px squares on the left half for 175.7 px, squares in one quarter for 246.4 px, and the fit of a measurement there came out at 77.3 px or not at all. Now the quarters whose lines show a grid are grouped by cell size, the group with the most evidence wins, and only its quarters' lines refine the cell. A grid seen in one quarter only needs twice the evidence and at least 8 lines across the quarter, in two quarters at least 6 lines across each.
+- Fixed: a straight edge where the map turns black (around rooms, below a band of squares) lined up as hexes √3 times the squares, and detection picked them. A grid now needs a line in at least a fifth of the periods along each direction.
+- On 7 test maps with a grid on part of them (6 with squares, 1 with hexes), detection and the fit find the cell within 0.05 % and every corner within 0.01 cell. On 24 random maps of the same kinds (squares on a half, a band, one quarter or the centre, art or black around them, faint or strong lines, cells of 40 to 150 px), the fit of a measurement finds the grid on 24 (0.7: 13) and detection on 21 (0.7: 5). The 3 missed: faint squares of 40 and 80 px in the centre only (detection gives twice the cell) and squares of 133 px in one quarter only (fewer than 8 lines). On 7 maps without a grid (walls, painted art) detection invents none.
+- Local corrections are measured where each region's lines are, not at its centre: on a dungeon with squares only in the rooms, the worst error went from 0.049 to 0.009 cell.
+- Calibration steps:
+  - **Skip quarter** (S): a quarter without squares or hexes no longer blocks the steps.
+  - Once the map's lines confirm a grid, the quarters where they show none are skipped by themselves.
+  - A measurement that does not match a grid the lines already confirmed is left out and the grid stays. 0.7 dropped the confirmed grid and asked to measure again.
+  - The progress shows measured (●), skipped (–) and remaining (○) quarters.
+  - The panel is shorter: Detect sits beside Squares and Hexes, the cell size and the unit share one form.
+- Interface:
+  - The right-click menu is in four tabs: **Tools**, **Edit**, **View**, **Project**. The tallest is 402 px, the menu was about 800 px. It opens on the tab used last, also after a restart. Copy and Duplicate are now in the menu (Edit), Find moved to Edit, Opaque fog to View.
+  - Map properties in two tabs, **Grid** and **Fog of war** (with Opaque fog). Token properties: **Token** and **Vision**. Each opens on the tab used last.
+  - Tool hints: the whole hint the first 3 times a tool is picked, then only its name and key.
+
 ## 0.7
 
 Projects from 0.6.x open unchanged. Tokens with vision saved by 0.7 open in 0.6.x without it.

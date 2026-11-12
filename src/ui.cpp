@@ -93,6 +93,12 @@ void Panel::popUp(QPoint pos, QPoint from) {
     animate(true, pos + from, pos);
 }
 
+void Panel::fit() {
+    adjustSize();
+    const QWidget *p = parentWidget();
+    if (y() + height() > p->height()) move(x(), qMax(0, p->height() - height()));
+}
+
 void Panel::dismiss() {
     if (!shown) return;
     shown = false;
@@ -323,4 +329,57 @@ void Toast::paintEvent(QPaintEvent *) {
     p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
     p.setPen(ui::text);
     p.drawText(rect().adjusted(16, 9, -16, -9), Qt::TextWordWrap | Qt::AlignCenter, message);
+}
+
+// ---- Tabs ----
+
+Tabs::Tabs(QWidget *parent) : QWidget(parent) {
+    column = new QVBoxLayout(this);
+    column->setContentsMargins(0, 0, 0, 0);
+    column->setSpacing(6);
+    bar = new QHBoxLayout;
+    bar->setSpacing(2);
+    column->addLayout(bar);
+    auto *rule = new QWidget;
+    rule->setFixedHeight(1);
+    rule->setAttribute(Qt::WA_StyledBackground);
+    rule->setStyleSheet("background: rgba(255,255,255,22);");
+    column->addWidget(rule);
+}
+
+QVBoxLayout *Tabs::addPage(const QString &english) {
+    auto *b = new MenuButton(english);
+    b->setCheckable(true);
+    b->tint = QColor(88, 91, 104);   // a quiet pill: the tools keep the accent colour
+    const int i = int(buttons.size());
+    connect(b, &QAbstractButton::clicked, this, [this, i] { setCurrent(i); });
+    buttons << b;
+    bar->addWidget(b);
+    auto *page = new QWidget;
+    auto *l = new QVBoxLayout(page);
+    l->setContentsMargins(0, 0, 0, 0);
+    l->setSpacing(4);
+    pages << page;
+    column->addWidget(page);
+    setCurrent(index < 0 ? 0 : index);
+    return l;
+}
+
+void Tabs::setCurrent(int i) {
+    if (i < 0 || i >= count()) return;
+    index = i;
+    for (int k = 0; k < count(); ++k) {
+        buttons[k]->setChecked(k == i);
+        pages[k]->setVisible(k == i);   // a hidden page takes no room, also in the height of wrapped text
+    }
+    // the popup takes the new height now, not after the next layout pass
+    for (QWidget *w = this; w; w = w->parentWidget()) {
+        w->updateGeometry();
+        if (w->layout()) w->layout()->invalidate();
+        if (auto *p = qobject_cast<Panel *>(w)) {
+            if (p->isShown()) p->fit();
+            break;
+        }
+    }
+    emit currentChanged(i);
 }

@@ -7,9 +7,9 @@
 #include "mainwindow.h"
 #include "mapitem.h"
 #include "project.h"
+#include "ui.h"
 
 #include <private/qzipwriter_p.h>
-#include "ui.h"
 
 #include <QApplication>
 #include <QDir>
@@ -118,6 +118,36 @@ QImage gridImage(int w, int h, double cell, QPointF origin, int lineAlpha, int n
         for (double x = std::fmod(origin.x(), cell); x < w; x += cell) p.drawLine(QPointF(x, 0), QPointF(x, h));
         for (double y = std::fmod(origin.y(), cell); y < h; y += cell) p.drawLine(QPointF(0, y), QPointF(w, y));
     }
+    return img;
+}
+
+// Painted art without a grid: strokes at any angle, round blotches, shading.
+QImage paintedImage(int w, int h, bool dark) {
+    QImage img = dark ? QImage(w, h, QImage::Format_RGB32) : gridImage(w, h, 1, {}, 0, 40);
+    if (dark) img.fill(QColor(12, 12, 14));
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    for (int i = 0; dark ? i < 0 : i < 500; ++i) {
+        const QPointF a(rnd() % w, rnd() % h);
+        const double ang = (rnd() % 3600) / 10.0 * M_PI / 180, len = 40 + rnd() % 400;
+        p.setPen(QPen(QColor(rnd() % 120, rnd() % 120, rnd() % 120), 1 + rnd() % 6));
+        if (i % 3) p.drawLine(a, a + QPointF(std::cos(ang), std::sin(ang)) * len);
+        else {
+            p.setBrush(QColor(60 + rnd() % 120, 80 + rnd() % 120, 40 + rnd() % 80));
+            p.drawEllipse(a, 10 + rnd() % 60, 10 + rnd() % 60);
+            p.setBrush(Qt::NoBrush);
+        }
+    }
+    return img;
+}
+
+// A map whose squares cover only `area`: elsewhere painted art (or black, as around a dungeon's rooms).
+QImage partialGridImage(int w, int h, double cell, QPointF origin, const QPainterPath &area, bool dark) {
+    QImage img = paintedImage(w, h, dark);
+    const QImage grid = gridImage(w, h, cell, origin, 200, 25);
+    QPainter p(&img);
+    p.setClipPath(area);
+    p.drawImage(0, 0, grid);
     return img;
 }
 
@@ -258,6 +288,18 @@ bool pixelMatches(Canvas *c, MapItem *m, QPointF local, QColor expected, int tol
                .arg(expected.red()).arg(expected.green()).arg(expected.blue());
     return std::abs(g.red() - expected.red()) <= tol && std::abs(g.green() - expected.green()) <= tol
            && std::abs(g.blue() - expected.blue()) <= tol;
+}
+
+// Paints the window once per tab of the open popups: buttons and labels take their text when painted.
+void grabEveryTab(MainWindow &w) {
+    w.grab();
+    for (Panel *p : {w.menu, w.props})
+        if (p->isShown())
+            for (Tabs *t : p->findChildren<Tabs *>()) {
+                const int was = t->current();
+                for (int i = 0; i < t->count(); ++i) { t->setCurrent(i); w.grab(); }
+                t->setCurrent(was);
+            }
 }
 
 void wheel(Canvas *c, QPoint vp, int delta) {
@@ -694,7 +736,7 @@ void additions(MainWindow &w, const QString &dir, const QString &image) {
     lostMap->setPos(2000, 400);
     w.fitAll();
     w.openMenu(QPoint(80, 80));
-    w.grab();   // buttons take their text when painted
+    grabEveryTab(w);   // buttons take their text when painted
     key(c, Qt::Key_Escape);
     key(c, Qt::Key_L, "l");
     pause(250);
@@ -704,7 +746,7 @@ void additions(MainWindow &w, const QString &dir, const QString &image) {
         w.scene->clearSelection();
         it->setSelected(true);
         w.openProperties(it, QPoint(60, 60));
-        w.grab();
+        grabEveryTab(w);
     }
     zone->setSelected(true);   // two items selected
     w.openProperties(m, QPoint(60, 60));
@@ -964,16 +1006,16 @@ void version06(MainWindow &w, const QString &dir, const QString &map1, const QSt
         w.scene->clearSelection();
         m->setSelected(true);
         w.openProperties(m, QPoint(60, 60));
-        w.grab();
+        grabEveryTab(w);
     }
     auto *tok = new TokenItem("Orc", Qt::red, 90, 1);
     tok->setParentItem(w.layers[1]);
     w.scene->clearSelection();
     tok->setSelected(true);
     w.openProperties(tok, QPoint(60, 60));
-    w.grab();
+    grabEveryTab(w);
     w.openMenu(QPoint(80, 80));
-    w.grab();
+    grabEveryTab(w);
     key(c, Qt::Key_Escape);
     w.scene->clearSelection();
     c->setTool(Canvas::Calibrate);
@@ -1160,6 +1202,127 @@ void bench(MainWindow &w, const QString &dir) {
     say(QString("grid detection on one map: %1 s (%2)").arg(d.elapsed() / 1000.0, 0, 'f', 2).arg(g ? QString::number(g->cal.cellSize(), 'f', 2) + " px" : "none"));
 }
 
+// What 0.8 added.
+void version08(MainWindow &w, const QString &dir, const QString &out) {
+    say("\n== 0.8 ==");
+    Canvas *c = w.canvas;
+    w.newProject();
+    c->activeLayer = w.layers[0];
+    // calibration, step by step, on a map whose top-left quarter is art without squares
+    QPainterPath area, art;
+    area.addRect(0, 0, 3000, 2000);
+    art.addRect(0, 0, 1500, 1000);
+    const QString path = dir + "/partial.png";
+    partialGridImage(3000, 2000, 100, QPointF(50, 50), area.subtracted(art), false).save(path);
+    MapItem *m = w.importMap(path, QPointF(1500, 1000));   // top-left at 0,0
+    waitFor([&] { return m->src->ready; }, 60000);
+    w.scene->clearSelection();
+    m->setSelected(true);
+    c->setTool(Canvas::Calibrate);
+    Calibrator *cal = c->calibrator;
+    waitFor([&] { return !cal->busy(); }, 30000);
+    key(c, Qt::Key_S, "s");
+    check(cal->step() == 1 && cal->measured() == 0 && !cal->current(), "S skips a quarter without squares");
+    click(c, m->mapToScene(QPointF(1752, 352)));   // top-right quarter
+    click(c, m->mapToScene(QPointF(1849, 350)));
+    waitFor([&] { return !cal->busy(); }, 30000);
+    auto r = cal->current();
+    check(r && cal->confirmed() && std::abs(r->cellSize() - 100) < 0.05 && offBy(r->origin.x(), 50, 100) < 1 && offBy(r->origin.y(), 50, 100) < 1,
+          r ? QString("partial map: the measurement after a skipped quarter is matched to the lines (%1 px)").arg(r->cellSize(), 0, 'f', 3)
+            : QString("partial map: no grid after the first measurement"));
+    click(c, m->mapToScene(QPointF(260, 1430)));   // bottom-left: a pair 130 px apart, off the corners
+    click(c, m->mapToScene(QPointF(390, 1430)));
+    waitFor([&] { return !cal->busy(); }, 30000);
+    r = cal->current();
+    check(r && cal->confirmed() && cal->measured() == 1 && cal->step() == 2 && std::abs(r->cellSize() - 100) < 0.05,
+          "a measurement the lines do not confirm is left out and the confirmed grid stays");
+    key(c, Qt::Key_S, "s");
+    click(c, m->mapToScene(QPointF(2052, 1549)));   // bottom-right
+    click(c, m->mapToScene(QPointF(2151, 1552)));
+    waitFor([&] { return !cal->busy(); }, 30000);
+    r = cal->current();
+    check(r && cal->confirmed() && cal->measured() == 2 && cal->step() == 4 && std::abs(r->cellSize() - 100) < 0.05,
+          "measured, left out, skipped, measured: 4 steps and the grid matched");
+    key(c, Qt::Key_Return);
+    check(std::abs(m->cal.cellSize() - 100) < 0.05 && c->tool() == Canvas::Select, "Enter applies it");
+    m->setSelected(true);
+    c->setTool(Canvas::Calibrate);
+    for (int i = 0; i < 5; ++i) key(c, Qt::Key_S, "s");
+    check(cal->step() == 4 && !cal->current(), "every quarter skipped: no grid, the panel says what to do");
+    key(c, Qt::Key_Escape);
+    // squares on the right half only: once the lines confirm the grid, the bottom-left quarter is skipped by itself
+    QPainterPath rightHalf;
+    rightHalf.addRect(1500, 0, 1500, 2000);
+    const QString right = dir + "/right.png";
+    partialGridImage(3000, 2000, 100, QPointF(50, 50), rightHalf, false).save(right);
+    MapItem *m2 = w.importMap(right, QPointF(1500, 4000));   // top-left at 0,3000
+    waitFor([&] { return m2->src->ready; }, 60000);
+    w.scene->clearSelection();
+    m2->setSelected(true);
+    c->setTool(Canvas::Calibrate);
+    waitFor([&] { return !cal->busy(); }, 30000);
+    key(c, Qt::Key_S, "s");
+    click(c, m2->mapToScene(QPointF(1752, 352)));
+    click(c, m2->mapToScene(QPointF(1849, 350)));
+    waitFor([&] { return !cal->busy(); }, 30000);
+    check(cal->confirmed() && cal->step() == 3, QString("the quarter where the lines show no grid is skipped by itself (step %1)").arg(cal->step()));
+    key(c, Qt::Key_Escape);
+
+    // the menu and the longer popups in tabs: the popup is as tall as the tab shown
+    c->resetTransform();
+    c->centerOn(m->sceneBoundingRect().center());
+    w.openMenu(QPoint(60, 40));
+    pause(300);
+    QList<int> heights;
+    for (int i = 0; i < w.menuTabs->count(); ++i) {
+        w.menuTabs->setCurrent(i);
+        heights << w.menu->height();
+    }
+    w.menuTabs->setCurrent(0);
+    pause(100);
+    w.grab().save(out + "/vaxmaps-menu-tabs.png");
+    check(w.menuTabs->count() == 4 && heights[0] < 560 && *std::max_element(heights.begin() + 1, heights.end()) < heights[0],
+          QString("menu in 4 tabs, heights %1 px (0.7: one list of about 800 px)").arg([&] { QStringList l; for (int h : heights) l << QString::number(h); return l.join(", "); }()));
+    if (auto *find = findIn<MenuButton>(w.menu, "Find…")) find->click();
+    check(!w.menu->isShown() && w.props->isShown(), "a command in another tab works from the menu");
+    key(c, Qt::Key_Escape);
+    w.menuTabs->setCurrent(2);
+    w.openMenu(QPoint(60, 40));
+    check(w.menuTabs->current() == 2, "the menu opens on the tab used last");
+    key(c, Qt::Key_Escape);
+    w.scene->clearSelection();
+    m->setSelected(true);
+    w.openProperties(m, QPoint(60, 40));
+    pause(300);
+    auto *tabs = w.props->findChild<Tabs *>();
+    const int gridHeight = w.props->height();
+    if (tabs) tabs->setCurrent(1);
+    const int fogHeight = w.props->height();
+    pause(250);   // the tab's highlight glides over
+    w.grab().save(out + "/vaxmaps-map-properties.png");
+    check(tabs && tabs->count() == 2 && fogHeight < gridHeight, QString("map properties: Grid and Fog of war tabs (%1 and %2 px tall)").arg(gridHeight).arg(fogHeight));
+    key(c, Qt::Key_Escape);
+    w.openProperties(m, QPoint(60, 40));
+    tabs = w.props->findChild<Tabs *>();
+    check(tabs && tabs->current() == 1, "the map popup opens on its tab used last");
+    if (tabs) tabs->setCurrent(0);
+    key(c, Qt::Key_Escape);
+    w.setLanguage(true);   // the longer Portuguese names fit in the tabs and the calibration panel
+    w.menuTabs->setCurrent(0);
+    w.openMenu(QPoint(60, 40));
+    pause(300);
+    w.grab().save(out + "/vaxmaps-menu-pt.png");
+    key(c, Qt::Key_Escape);
+    m->setSelected(true);
+    c->setTool(Canvas::Calibrate);
+    key(c, Qt::Key_S, "s");
+    pause(300);
+    w.grab().save(out + "/vaxmaps-calibration-pt.png");
+    key(c, Qt::Key_Escape);
+    w.setLanguage(false);
+    w.dirty = false;
+}
+
 } // namespace
 
 int runSelfTest(const QStringList &args) {
@@ -1253,6 +1416,62 @@ int runSelfTest(const QStringList &args) {
                             : QString("nothing found")));
             }
         }
+        // Maps whose squares do not cover the whole map: each quarter of the map is no longer a sample of the grid.
+        struct Partial { const char *name; QPainterPath area; bool dark; int quarters = -1; };   // quarters: expected GridFit::quarters
+        QVector<Partial> partial;
+        auto rect = [](double x, double y, double w, double h) { QPainterPath p; p.addRect(x, y, w, h); return p; };
+        partial.push_back({"squares on the left half only", rect(0, 0, 1500, 2000), false, 0b0101});
+        partial.push_back({"squares in the centre, painted border", rect(750, 500, 1500, 1000), false});
+        partial.push_back({"squares under a title band", rect(0, 650, 3000, 1350), false});
+        partial.push_back({"squares in one quarter only", rect(1500, 1000, 1500, 1000), false, 0b1000});
+        partial.push_back({"squares on the top half, black below", rect(0, 0, 3000, 1000), true, 0b0011});   // the edge to black lined up as hexes
+        QPainterPath rooms;   // a dungeon: squares in the rooms, black around them
+        for (QRect r : {QRect(2, 2, 8, 6), QRect(14, 3, 6, 9), QRect(26, 1, 12, 7), QRect(5, 14, 10, 10), QRect(22, 15, 7, 6), QRect(33, 13, 6, 12)})
+            rooms.addRect(23.4 + r.x() * 70.37, 41.9 + r.y() * 70.37, r.width() * 70.37, r.height() * 70.37);
+        partial.push_back({"squares only in the rooms, black around", rooms, true});
+        for (const Partial &k : partial) {
+            const Calibration truth = Calibration::square(70.37, QPointF(23.4, 41.9));
+            const Analysis a = analyse(partialGridImage(3000, 2000, 70.37, truth.origin, k.area, k.dark), QSize(3000, 2000));
+            QVector<QPointF> inside;
+            for (const QPointF &p : latticePoints(truth, 3000, 2000, 40))
+                if (k.area.contains(p) && k.area.contains(p + QPointF(35, 35)) && k.area.contains(p - QPointF(35, 35))) inside << p;
+            for (auto [how, g] : {std::pair{"fit to a measurement", fitGrid(a, Calibration::Square, 70.37 * 1.04)},
+                                  std::pair{"automatic detection", detectGrid(a)}}) {
+                const double err = g ? latticeError(g->cal, inside) : 1;
+                check(g && !g->cal.isHex() && std::abs(g->cal.cellSize() - 70.37) < 0.004 * 70.37 && err < 0.05 && (k.quarters < 0 || g->quarters == k.quarters),
+                      QString("%1, %2: %3").arg(k.name, how,
+                          g ? QString("%1, cell %2 px (true 70.37), worst error %3 cells inside the grid, strength %4, quarters %5")
+                                  .arg(g->cal.isHex() ? "hexes" : "squares").arg(g->cal.cellSize(), 0, 'f', 3).arg(err, 0, 'f', 3).arg(g->strength, 0, 'f', 2)
+                                  .arg(g->quarters, 4, 2, QChar('0'))
+                            : QString("nothing found")));
+            }
+        }
+        {   // hexes on part of the map
+            const Calibration hx = Calibration::hex(Calibration::HexPointy, 84.7, QPointF(52.2, 31.6));
+            QImage img = paintedImage(3000, 2000, false);
+            QPainter p(&img);
+            p.setClipRect(0, 0, 1500, 2000);
+            p.drawImage(0, 0, terrainHexImage(3000, 2000, hx));
+            p.end();
+            QVector<QPointF> inside;
+            for (const QPointF &q : latticePoints(hx, 1460, 2000, 40)) inside << q;
+            const Analysis a = analyse(img, img.size());
+            for (auto [how, g] : {std::pair{"fit to a measurement", fitGrid(a, Calibration::HexPointy, 84.7 * 0.96)},
+                                  std::pair{"automatic detection", detectGrid(a)}}) {
+                const double err = g ? latticeError(g->cal, inside) : 1;
+                check(g && g->cal.grid == Calibration::HexPointy && std::abs(g->cal.cellSize() - 84.7) < 0.004 * 84.7 && err < 0.05,
+                      QString("hexes on the left half only, %1: %2").arg(how,
+                          g ? QString("cell %1 px (true 84.7), worst error %2 cells inside the grid").arg(g->cal.cellSize(), 0, 'f', 3).arg(err, 0, 'f', 3)
+                            : QString("nothing found")));
+            }
+        }
+        QStringList invented;   // art, walls and noise: no grid may come out of them
+        for (int i = 0; i < 6; ++i) {
+            const QImage img = i % 2 ? paintedImage(3000, 2000, false) : gridImage(3000, 2000, 1, {}, 0, 25 + 10 * i);
+            if (const auto g = detectGrid(analyse(img, img.size())))
+                invented << QString("%1 px, strength %2").arg(g->cal.cellSize(), 0, 'f', 1).arg(g->strength, 0, 'f', 2);
+        }
+        check(invented.isEmpty(), "6 maps without a grid (painted art, walls): detection invents none " + invented.join("; "));
         // A grid that is not regular: cells grow from 66 to 74 px across the map and rows tilt by 0.25°.
         QVector<double> xs, ys;
         for (double x = 30, c = 66; x < 3000; x += c, c += 8.0 / 42) xs << x;
@@ -1618,6 +1837,7 @@ int runSelfTest(const QStringList &args) {
     version06(w, tmp.path(), map1, map2);
     version062(w, tmp.path(), map2);
     version07(w, tmp.path(), map1);
+    version08(w, tmp.path(), out);
     if (args.contains("--bench")) bench(w, tmp.path());
     w.dirty = false;
     say(failures ? QString("\n%1 failure(s)").arg(failures) : "\nAll tests passed.");

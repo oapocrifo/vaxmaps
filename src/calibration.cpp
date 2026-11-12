@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
+#include <QGridLayout>
 #include <QGraphicsPathItem>
 #include <QGraphicsScene>
 #include <QHBoxLayout>
@@ -32,6 +33,7 @@ constexpr double MIN_HINTED = 0.65;          // a measured cell needs less suppo
 constexpr double MIN_DETECTED = 1.3;    // lines are measured along their direction only (see analyse): noise scores near 1
 constexpr double DENSER_PREFERENCE = 0.75;   // Atlas DENSER_GRID_PREFERENCE
 constexpr double CLICK_TOLERANCE = 0.25;     // fitted grid must pass this close (in cells) to the clicked points
+constexpr double MIN_LINED = 0.2;            // share of the periods along a profile that must show a line
 constexpr double SQRT3 = 1.7320508075688772;
 
 using Grid = Calibration::Grid;
@@ -74,6 +76,23 @@ Phase fold(const float *sum, const float *count, int n, double t0, double period
         const double a = sm[(best + d + bins) % bins] - median;
         if (a > 0) { wsum += a; dsum += a * d; }
     }
+    // A grid repeats: at least a fifth of the periods along the profile must have a line in the peak. One straight
+    // edge (a room's wall, where the map's art turns black) piles up in a single period and scores at any spacing.
+    const int periods = int(n * k / bins) + 3;
+    const double cb = best + 0.5, first = std::floor(((t0 + 0.5) * k - cb) / bins);
+    std::vector<double> ps(periods, 0), pc(periods, 0);
+    for (int i = 0; i < n; ++i) {
+        const double u = (t0 + i + 0.5) * k - cb, m = std::floor(u / bins + 0.5);
+        const int j = int(m - first);
+        if (std::abs(u - m * bins) <= w + 0.5 && j >= 0 && j < periods) { ps[j] += sum[i]; pc[j] += count[i]; }
+    }
+    double inPeak = 0, inPeakPixels = 0, fullest = 0;
+    for (int j = 0; j < periods; ++j) { inPeak += ps[j]; inPeakPixels += pc[j]; fullest = std::max(fullest, pc[j]); }
+    const double level = inPeakPixels > 0 ? median + 0.5 * (inPeak / inPeakPixels - median) : 0;
+    int counted = 0, lined = 0;
+    for (int j = 0; j < periods; ++j)
+        if (pc[j] >= 0.5 * fullest) { ++counted; lined += ps[j] / pc[j] >= level; }
+    if (lined < MIN_LINED * counted) return {};
     const double centre = (best + 0.5 + (wsum > 0 ? dsum / wsum : 0)) / k;
     return {(sm[best] - median) / mean, std::fmod(centre + period, period)};
 }
@@ -96,39 +115,71 @@ QVector<Family> families(const Analysis &a, Grid g, double cell) {
     return f;
 }
 
-struct Score { double strength = 0, cell = 0; QVector<double> t; };
+struct Score { double strength = 0, cell = 0; QVector<double> t; int regions = 0; };   // regions: bit r for a.proj[r]
 
-Score score(const Analysis &a, Grid g, double cell, int region = 0) {
+// The six line directions summed over the regions in `mask` (bits 1-4: quarters). The quarters' bins share the
+// whole map's grid of t (integer t0), so all four together give the whole map.
+struct Lines { Analysis::Projection proj[6]; };
+
+Lines linesOf(const Analysis &a, int mask) {
+    Lines l;
+    for (int k = 0; k < 6; ++k) {
+        double t0 = 1e300, t1 = -1e300;
+        for (int r = 1; r <= 4; ++r)
+            if (mask & (1 << r)) {
+                t0 = std::min(t0, a.proj[r][k].t0);
+                t1 = std::max(t1, a.proj[r][k].t0 + a.proj[r][k].sum.size());
+            }
+        Analysis::Projection &m = l.proj[k];
+        m.n = a.proj[0][k].n;
+        if (t1 <= t0) continue;
+        m.t0 = t0;
+        m.sum = m.count = QVector<float>(int(t1 - t0), 0);
+        for (int r = 1; r <= 4; ++r)
+            if (mask & (1 << r)) {
+                const Analysis::Projection &p = a.proj[r][k];
+                const int off = int(p.t0 - t0);
+                for (int i = 0; i < p.sum.size(); ++i) {
+                    m.sum[off + i] += p.sum[i];
+                    m.count[off + i] += p.count[i];
+                }
+            }
+    }
+    return l;
+}
+
+Score score(const Analysis &a, const Analysis::Projection *proj, Grid g, double cell) {
     Score s{1e9, cell, {}};
     for (const Family &f : families(a, g, cell)) {
-        const Phase ph = fold(a.proj[region][f.k], f.period);
+        const Phase ph = fold(proj[f.k], f.period);
         s.strength = std::min(s.strength, ph.strength);
         s.t << ph.t;
     }
     return s;
 }
 
-Score search(const Analysis &a, Grid g, double lo, double hi, double stepRel, int region = 0) {
+Score search(const Analysis &a, const Analysis::Projection *proj, Grid g, double lo, double hi, double stepRel) {
     Score best;
     for (double c = lo; c <= hi; c *= 1 + stepRel) {
-        const Score s = score(a, g, c, region);
+        const Score s = score(a, proj, g, c);
         if (s.strength > best.strength) best = s;
     }
     return best;
 }
 
-int profileLength(const Analysis &a, int region = 0) {
+int profileLength(const Analysis::Projection *proj) {
     int n = 0;
-    for (const auto &p : a.proj[region]) n = std::max(n, int(p.sum.size()));
+    for (int k = 0; k < 6; ++k) n = std::max(n, int(proj[k].sum.size()));
     return n;
 }
 
 // Best grid of type g with a cell in [lo, hi] (image px) inside one region: coarse pass, then each peak refined;
 // a multiple of the grid has all its lines on the map's lines too, so the densest well-supported peak wins.
 Score detectIn(const Analysis &a, Grid g, double lo, double hi, int region) {
-    const int n = profileLength(a, region);
+    const Analysis::Projection *proj = a.proj[region];
+    const int n = profileLength(proj);
     std::vector<Score> coarse;
-    for (double c = lo; c <= hi; c *= 1 + 3.0 / n) coarse.push_back(score(a, g, c, region));
+    for (double c = lo; c <= hi; c *= 1 + 3.0 / n) coarse.push_back(score(a, proj, g, c));
     double top = 0;
     for (const Score &s : coarse) top = std::max(top, s.strength);
     std::vector<Score> peaks;
@@ -138,7 +189,7 @@ Score detectIn(const Analysis &a, Grid g, double lo, double hi, int region) {
         bool isPeak = true;
         for (size_t j = (i > 3 ? i - 3 : 0); j <= std::min(coarse.size() - 1, i + 3) && isPeak; ++j)
             isPeak = j == i || coarse[j].strength <= s;
-        if (isPeak) peaks.push_back(search(a, g, coarse[i].cell * (1 - 3.0 / n), coarse[i].cell * (1 + 3.0 / n), 0.25 / n, region));
+        if (isPeak) peaks.push_back(search(a, proj, g, coarse[i].cell * (1 - 3.0 / n), coarse[i].cell * (1 + 3.0 / n), 0.25 / n));
     }
     double best = 0;
     for (const Score &s : peaks) best = std::max(best, s.strength);
@@ -148,21 +199,51 @@ Score detectIn(const Analysis &a, Grid g, double lo, double hi, int region) {
     return pick;
 }
 
-// The quarters' cells, their median, and the whole map's refinement of it when the whole map agrees (a regular
-// grid: more lines, more precision). A grid that drifts keeps the median, the local corrections do the rest.
-Score combine(const Analysis &a, Grid g, const std::vector<Score> &quarters) {
+// One cell from the four quarters (quarters[i] is region i + 1). A map may show its grid in only some of them (a
+// border, a title, rooms on black): the quarters whose lines stand out at least half as much as the best one are
+// grouped by cell size (within 8 %: a grid that drifts stays one group), and the group with the most strength wins.
+// A grid seen in one quarter only needs more evidence: twice the strength and, when detected, at least 8 lines
+// across the quarter (a few walls of a room can line up for 3 or 4); in two quarters, at least 6 lines across each. The group's lines together, without the
+// quarters that show no grid, then refine the cell when they agree (a regular grid: more lines, more precision).
+// A grid that drifts keeps the median, the local corrections do the rest.
+Score combine(const Analysis &a, Grid g, const std::vector<Score> &quarters, bool detecting) {
+    double top = 0;
+    for (const Score &q : quarters) top = std::max(top, q.strength);
+    std::vector<int> kept;
+    for (int i = 0; i < int(quarters.size()); ++i)
+        if (quarters[i].cell > 0 && quarters[i].strength > 0 && quarters[i].strength >= 0.5 * top) kept.push_back(i);
+    std::vector<int> group;
+    double groupStrength = 0;
+    for (int i : kept) {
+        std::vector<int> members;
+        double sum = 0;
+        for (int j : kept)
+            if (std::abs(quarters[j].cell / quarters[i].cell - 1) <= 0.08) { members.push_back(j); sum += quarters[j].strength; }
+        if (sum > groupStrength) { group = members; groupStrength = sum; }
+    }
+    if (group.empty()) return {};
     std::vector<double> cells, strengths;
-    for (const Score &q : quarters)
-        if (q.cell > 0 && q.strength > 0) { cells.push_back(q.cell); strengths.push_back(q.strength); }
-    if (cells.size() < 2) return {};
+    int mask = 0;
+    for (int i : group) {
+        cells.push_back(quarters[i].cell);
+        strengths.push_back(quarters[i].strength);
+        mask |= 1 << (i + 1);
+    }
+    const size_t mid = (cells.size() - 1) / 2;   // the lower median strength: in a group of two, both must show the grid
     std::nth_element(cells.begin(), cells.begin() + cells.size() / 2, cells.end());
-    std::nth_element(strengths.begin(), strengths.begin() + strengths.size() / 2, strengths.end());
-    const double cell = cells[cells.size() / 2], strength = strengths[strengths.size() / 2];
-    Score whole = search(a, g, cell * 0.98, cell * 1.02, 0.25 / profileLength(a));
-    if (whole.strength >= 0.6 * strength) return whole;
-    Score s = score(a, g, cell);
-    s.strength = strength;
-    return s;
+    std::nth_element(strengths.begin(), strengths.begin() + mid, strengths.end());
+    const double cell = cells[cells.size() / 2], strength = strengths[mid];
+    const double side = std::min(a.gray.width(), a.gray.height()) / 2.0 / ((a.sx + a.sy) / 2);   // a quarter's, image px
+    if (group.size() == 1 && (detecting ? strength < 2 * MIN_DETECTED || cell > side / 8 : strength < 2 * MIN_HINTED)) return {};
+    if (group.size() == 2 && detecting && cell > side / 6) return {};
+    const Lines lines = linesOf(a, mask);
+    Score refined = search(a, lines.proj, g, cell * 0.98, cell * 1.02, 0.25 / profileLength(lines.proj));
+    if (refined.strength < 0.6 * strength) {
+        refined = score(a, lines.proj, g, cell);
+        refined.strength = strength;
+    }
+    refined.regions = mask;
+    return refined;
 }
 
 double wrap(double v, double period) {   // into [-period/2, period/2)
@@ -277,8 +358,12 @@ int localField(const Analysis &a, Calibration &c, double globalStrength) {
                     if (cand.strength > ph.strength) { ph = cand; period = pl; }
                 }
                 weakest = std::min(weakest, ph.strength);
-                // Offset at the region's centre: its nearest local line against the nearest regular line.
-                const double tc = QPointF::dotProduct(n, QPointF((x0 + x1) / 2.0, (y0 + y1) / 2.0));
+                // Offset where the region's lines are (its centre when they fill it; a room's middle when black or
+                // art surrounds it, so a local period measured on a few lines is not stretched over empty space):
+                // its nearest local line against the nearest regular line.
+                double tw = 0, w = 0;
+                for (int b = 0; b < bins; ++b) { tw += (t0 + b + 0.5) * sum[b]; w += sum[b]; }
+                const double tc = w > 0 ? tw / w : QPointF::dotProduct(n, QPointF((x0 + x1) / 2.0, (y0 + y1) / 2.0));
                 const double local = ph.t + std::round((tc - ph.t) / period) * period;
                 delta << wrap(local - QPointF::dotProduct(n, oA), f.period);
             }
@@ -474,10 +559,10 @@ std::optional<GridFit> fitGrid(const Analysis &a, Grid type, double hint) {
     if (!a.valid() || !(hint > 0)) return {};
     std::vector<Score> quarters;
     for (int r = 1; r <= 4; ++r)
-        quarters.push_back(search(a, type, hint * (1 - HINT_RANGE), hint * (1 + HINT_RANGE), 0.25 / profileLength(a, r), r));
-    const Score s = combine(a, type, quarters);
+        quarters.push_back(search(a, a.proj[r], type, hint * (1 - HINT_RANGE), hint * (1 + HINT_RANGE), 0.25 / profileLength(a.proj[r])));
+    const Score s = combine(a, type, quarters, false);
     if (s.strength < MIN_HINTED || s.t.size() < 2) return {};
-    GridFit g{lattice(a, type, s), s.strength, 0};
+    GridFit g{lattice(a, type, s), s.strength, 0, s.regions >> 1};
     g.regions = localField(a, g.cal, s.strength);
     return g;
 }
@@ -494,7 +579,7 @@ std::optional<GridFit> detectGrid(const Analysis &a) {
         if (hi <= lo) continue;
         std::vector<Score> quarters;
         for (int r = 1; r <= 4; ++r) quarters.push_back(detectIn(a, g, lo, hi, r));
-        const Score s = combine(a, g, quarters);
+        const Score s = combine(a, g, quarters, true);
         if (s.strength >= MIN_DETECTED && s.t.size() >= 2) found.push_back({g, s});
     }
     // The edges of hexes w wide also line up as hexes of the other orientation √3·w wide: try the smaller one.
@@ -502,7 +587,9 @@ std::optional<GridFit> detectGrid(const Analysis &a) {
         if (found[i].g != Calibration::Square) {
             const Grid other = found[i].g == Calibration::HexPointy ? Calibration::HexFlat : Calibration::HexPointy;
             const double c = found[i].s.cell / SQRT3;
-            const Score s = search(a, other, c * 0.97, c * 1.03, 0.25 / profileLength(a));
+            const Lines lines = linesOf(a, found[i].s.regions);   // where the parent's grid is
+            Score s = search(a, lines.proj, other, c * 0.97, c * 1.03, 0.25 / profileLength(lines.proj));
+            s.regions = found[i].s.regions;
             if (s.t.size() >= 2) found.push_back({other, s, true});   // judged against its parent below
         }
     // Bigger cells score higher (a line takes a smaller share of a longer period), so the densest grid whose lines
@@ -515,7 +602,7 @@ std::optional<GridFit> detectGrid(const Analysis &a) {
     for (const Candidate &c : found)
         if (c.s.strength >= (c.alias ? 0.35 : 0.5) * best && (!pick || spacing(c) < spacing(*pick))) pick = &c;
     if (!pick) return {};
-    GridFit chosen{lattice(a, pick->g, pick->s), pick->s.strength, 0};
+    GridFit chosen{lattice(a, pick->g, pick->s), pick->s.strength, 0, pick->s.regions >> 1};
     chosen.regions = localField(a, chosen.cal, chosen.strength);
     return chosen;
 }
@@ -552,7 +639,7 @@ Calibration gridFromMeasurements(const QVector<Measurement> &m, bool hex) {
 // ---- panel ----
 
 Calibrator::Calibrator(Canvas *c) : Panel(c, false), canvas(c) {
-    setFixedWidth(380);
+    setFixedWidth(400);
     QVBoxLayout *v = body;
     title = new QLabel;
     QFont f = title->font();
@@ -568,42 +655,49 @@ Calibrator::Calibrator(Canvas *c) : Panel(c, false), canvas(c) {
         b->setCheckable(true);
         types->addWidget(b);
     }
+    detectButton = new MenuButton("Detect", "F");
+    detectButton->setTip("Finds squares or hexes in the map's lines, without clicks");
+    types->addWidget(detectButton);
     v->addLayout(types);
-    detectButton = new MenuButton("Detect the grid automatically", "F");
-    v->addWidget(detectButton);
-    auto *typed = new QHBoxLayout;
-    typed->setSpacing(3);
-    typed->addWidget(new Label("Or type the cell size:"));
+    instruction = new QLabel;
+    instruction->setWordWrap(true);
+    instruction->setMinimumHeight(58);
+    instruction->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    v->addWidget(instruction);
+    auto *steps = new QHBoxLayout;
+    progress = new QLabel;
+    steps->addWidget(progress, 1);
+    skipButton = new MenuButton("Skip quarter", "S");
+    skipButton->setTip("This quarter has no squares or hexes: go to the next one");
+    steps->addWidget(skipButton);
+    v->addLayout(steps);
+    auto *form = new QGridLayout;
+    form->setHorizontalSpacing(6);
+    form->setVerticalSpacing(4);
+    form->addWidget(new Label("Cell size"), 0, 0);
     cellSpin = new QDoubleSpinBox;
     cellSpin->setRange(2, 100000);
     cellSpin->setDecimals(2);
     cellSpin->setValue(70);
     cellSpin->setSuffix(" px");
     cellSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
-    typed->addWidget(cellSpin);
+    cellSpin->setToolTip(T("Type the cell size instead of measuring it"));
+    form->addWidget(cellSpin, 0, 1);
     auto *use = new MenuButton("Use");
-    typed->addWidget(use);
-    v->addLayout(typed);
+    form->addWidget(use, 0, 2);
     connect(use, &QAbstractButton::clicked, this, [this] { useCell(cellSpin->value()); });
-    instruction = new QLabel;
-    instruction->setWordWrap(true);
-    instruction->setMinimumHeight(58);
-    instruction->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    v->addWidget(instruction);
-    progress = new QLabel;
-    v->addWidget(progress);
-    auto *distance = new QHBoxLayout;
     unitsLabel = new QLabel;
-    distance->addWidget(unitsLabel);
+    form->addWidget(unitsLabel, 1, 0);
     perCell = new QDoubleSpinBox;
     perCell->setRange(0.001, 1e6);
     perCell->setDecimals(2);
     perCell->setButtonSymbols(QAbstractSpinBox::NoButtons);
-    distance->addWidget(perCell);
+    form->addWidget(perCell, 1, 1);
     unit = new QLineEdit;
-    unit->setMaximumWidth(56);
-    distance->addWidget(unit);
-    v->addLayout(distance);
+    unit->setMaximumWidth(70);
+    form->addWidget(unit, 1, 2);
+    form->setColumnStretch(1, 1);
+    v->addLayout(form);
     auto *buttons = new QHBoxLayout;
     buttons->setSpacing(3);
     applyButton = new MenuButton("Apply", "Enter");
@@ -617,6 +711,7 @@ Calibrator::Calibrator(Canvas *c) : Panel(c, false), canvas(c) {
     connect(squaresButton, &QAbstractButton::clicked, this, [this] { setHex(false); });
     connect(hexButton, &QAbstractButton::clicked, this, [this] { setHex(true); });
     connect(detectButton, &QAbstractButton::clicked, this, &Calibrator::autoDetect);
+    connect(skipButton, &QAbstractButton::clicked, this, &Calibrator::skip);
     connect(applyButton, &QAbstractButton::clicked, this, &Calibrator::apply);
     connect(againButton, &QAbstractButton::clicked, this, &Calibrator::measureAgain);
     connect(cancel, &QAbstractButton::clicked, this, [this] { canvas->setTool(Canvas::Select); });
@@ -636,7 +731,7 @@ void Calibrator::start(MapItem *selected) {
     popUp(QPoint(6, 6), QPoint(-14, 0));
     title->setText(T("Calibrate grid"));
     progress->clear();
-    for (MenuButton *b : {applyButton, againButton, detectButton}) b->setEnabled(false);
+    for (MenuButton *b : {applyButton, againButton, detectButton, skipButton}) b->setEnabled(false);
     applyButton->setChecked(false);
     perCell->setValue(1.5);
     unit->setText("m");
@@ -682,6 +777,7 @@ void Calibrator::setHex(bool h) {
 void Calibrator::reset() {
     clearMarks();
     measurements.clear();
+    stepAt = skipped = lineQuarters = 0;
     pointA.reset();
     result.reset();
     matched = detecting = fitting = false;
@@ -694,6 +790,16 @@ void Calibrator::reset() {
 void Calibrator::measureAgain() {
     if (!map) return;
     reset();
+    showStep();
+}
+
+void Calibrator::skip() {
+    if (!map || stepAt >= 4 || detecting || fitting) return;
+    skipped |= 1 << stepAt;
+    ++stepAt;
+    pointA.reset();
+    if (stepAt >= 4 && !result && !measurements.isEmpty())
+        return setResult(gridFromMeasurements(measurements, hex), false, T("from the mean of your measurements (the map's lines did not confirm it)"));
     showStep();
 }
 
@@ -719,6 +825,11 @@ void Calibrator::clearMarks() {
 void Calibrator::showStep() {
     if (!map) return;
     clearMarks();
+    // Once the lines confirm a grid, the quarters where they do not show it are skipped: there is nothing to measure.
+    while (matched && lineQuarters && stepAt < 4 && !(lineQuarters & (1 << stepAt))) {
+        skipped |= 1 << stepAt;
+        ++stepAt;
+    }
     QPen yellow(QColor(255, 210, 60), 2);
     yellow.setCosmetic(true);
     for (const Measurement &m : measurements) {
@@ -726,7 +837,7 @@ void Calibrator::showStep() {
         line->setPen(yellow);
         mark(line);
     }
-    const int q = measured();
+    const int q = stepAt;
     const QString what = T(hex ? "the centre of a hex" : "a corner of a square");
     const QString next = T(hex ? "then the centre of the hex next to it on the right" : "then the next corner to its right");
     if (q < 4) {
@@ -750,13 +861,16 @@ void Calibrator::showStep() {
             mark(outline);
         }
     }
-    QString dots;
-    for (int i = 0; i < 4; ++i) dots += i < q ? "● " : "○ ";
+    QString dots;   // measured, skipped, still to do
+    for (int i = 0; i < 4; ++i) dots += i >= q ? "○ " : skipped & (1 << i) ? "– " : "● ";
     progress->setText(T("Step %1 of 4   %2").arg(std::min(q + 1, 4)).arg(dots.trimmed()));
+    skipButton->setEnabled(q < 4);
     if (pointA) return;
-    if (!result) {
-        setText(q == 0 ? T("Click %1 in the highlighted quarter, %2. Zoom in for precision.").arg(what, next)
-                       : T("The map's lines did not confirm the grid yet. Measure again in the highlighted quarter: %1, %2.").arg(what, next));
+    if (!result && q >= 4) {
+        setText(T("No quarter was measured. Detect the grid (F), type the cell size, or Start over."));
+    } else if (!result) {
+        setText(measured() == 0 ? T("Click %1 in the highlighted quarter, %2. Zoom in for precision. No squares or hexes there? Skip it (S).").arg(what, next)
+                                : T("The map's lines did not confirm the grid yet. Measure in the highlighted quarter: %1, %2. No grid there? Skip it (S).").arg(what, next));
     } else if (q < 4) {
         setText(T("Grid %1: cell of %2 px.\nCheck the yellow grid. Enter applies it. To refine, measure %3 in the outlined quarter, %4. "
                   "Arrows move the grid (Shift: 0.1 px).")
@@ -772,13 +886,13 @@ void Calibrator::mousePress(QPointF sp) {
         if (MapItem *m = mapAt(canvas->scene(), sp, false)) choose(m);
         return;
     }
-    if (measured() >= 4 || detecting) return;
+    if (stepAt >= 4 || detecting) return;
     QPointF p = map->mapFromScene(sp);
     if (!map->boundingRect().contains(p)) return;
     if (!pointA) {
-        const QRectF q = quarter(measured());
+        const QRectF q = quarter(stepAt);
         if (!q.adjusted(-q.width() * 0.1, -q.height() * 0.1, q.width() * 0.1, q.height() * 0.1).contains(p)) {
-            setText(T("Click inside the highlighted quarter of the map."));
+            setText(T("Click inside the highlighted quarter of the map. No squares or hexes there? Skip it (S)."));
             return;
         }
         pointA = p;
@@ -795,6 +909,7 @@ void Calibrator::mousePress(QPointF sp) {
     if (!hex) p.setY(pointA->y());   // Atlas: the second corner is on the first one's row
     if (QLineF(*pointA, p).length() < 2) return;
     measurements << Measurement{*pointA, p};
+    ++stepAt;
     pointA.reset();
     evaluate();
 }
@@ -833,11 +948,20 @@ void Calibrator::fitted(const std::optional<GridFit> &fit, const Calibration &me
     if (fit)
         for (const Measurement &m : measurements)
             for (QPointF c : {m.a, m.b}) onClicks = onClicks && nearLattice(fit->cal, c);
-    if (onClicks)
+    if (onClicks) {
+        lineQuarters = fit->quarters;
         setResult(fit->cal, true, fit->regions ? T("matched to the map's lines, following them in %1 regions").arg(fit->regions)
                                                : T("matched to the map's lines"));
-    else if (measured() >= 4)
-        setResult(measuredGrid, false, T("from the mean of your 4 measurements (the map's lines did not confirm it)"));
+    } else if (matched && result) {   // a grid the lines confirmed stays: the new measurement is left out
+        measurements.removeLast();
+        --stepAt;
+        map->preview = *result;
+        map->update();
+        showStep();
+        setText(T("That measurement did not match the grid the map's lines confirmed, so it was left out. "
+                  "Measure again in the outlined quarter, skip it (S), or press Enter to apply the grid."));
+    } else if (stepAt >= 4)
+        setResult(measuredGrid, false, T("from the mean of your measurements (the map's lines did not confirm it)"));
     else {
         result.reset();
         matched = false;
@@ -853,6 +977,7 @@ void Calibrator::useCell(double size) {
     ++fitGeneration;
     fitting = false;
     measurements.clear();
+    stepAt = skipped = 0;
     pointA.reset();
     setResult(hex ? Calibration::hex(Calibration::HexPointy, size, QPointF(size / 2, size / 2)) : Calibration::square(size, QPointF(0, 0)),
               false, T("typed in"));
@@ -900,6 +1025,8 @@ void Calibrator::runDetection() {
             self->detecting = false;
             if (g) {
                 self->measurements.clear();
+                self->stepAt = self->skipped = 0;
+                self->lineQuarters = g->quarters;
                 self->setResult(g->cal, true, T("of %1 found automatically%2").arg(T(g->cal.isHex() ? "hexes" : "squares"))
                                                   .arg(g->regions ? T(", following the lines in %1 regions").arg(g->regions) : QString()));
             } else {
@@ -934,6 +1061,7 @@ bool Calibrator::key(QKeyEvent *e) {
     case Qt::Key_Escape: canvas->setTool(Canvas::Select); return true;
     case Qt::Key_Return: case Qt::Key_Enter: apply(); return true;
     case Qt::Key_F: autoDetect(); return true;
+    case Qt::Key_S: skip(); return true;
     case Qt::Key_Left: case Qt::Key_Right: case Qt::Key_Up: case Qt::Key_Down: {
         if (!map || !map->preview) return true;
         const double step = (e->modifiers() & Qt::ShiftModifier) ? 0.1 : 1;

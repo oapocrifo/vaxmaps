@@ -8,6 +8,7 @@
 #include <QWidget>
 
 class QGraphicsOpacityEffect;
+class QHBoxLayout;
 class QVBoxLayout;
 class QTimer;
 
@@ -36,6 +37,7 @@ public:
     explicit Panel(QWidget *parent, bool autoClose = true);
     // Shows the panel with its top-left at `pos` (kept inside the parent), sliding in from pos + `from`.
     void popUp(QPoint pos, QPoint from = QPoint(0, 10));
+    void fit();   // takes the height of its content again, kept inside the parent
     void dismiss();
     bool isShown() const { return shown; }
     const bool autoClose;   // closes on a click outside it
@@ -115,4 +117,23 @@ private:
     QGraphicsOpacityEffect *fx;
     QVariantAnimation fade;
     QTimer *hold;
+};
+
+// A row of tabs over pages: only the page picked is shown, and the panel around it takes that page's height.
+class Tabs : public QWidget {
+    Q_OBJECT
+public:
+    explicit Tabs(QWidget *parent = nullptr);
+    QVBoxLayout *addPage(const QString &english);   // the new page's layout
+    void setCurrent(int i);
+    int current() const { return index; }
+    int count() const { return int(buttons.size()); }
+signals:
+    void currentChanged(int i);
+private:
+    QVBoxLayout *column;
+    QHBoxLayout *bar;
+    QList<MenuButton *> buttons;
+    QList<QWidget *> pages;
+    int index = -1;
 };

@@ -286,11 +286,27 @@ MenuButton *MainWindow::menuButton(QAction *a) {
     return b;
 }
 
+// The menu is four tabs: what the left button does, what acts on the selection, what is shown, the project.
+// It opens on the tab used last.
 void MainWindow::buildMenu() {
     menu = new Panel(canvas);
     menu->setFixedWidth(470);
-    QVBoxLayout *v = menu->body;
+    menuTabs = new Tabs;
+    menu->body->addWidget(menuTabs);
+    auto newGrid = [](QVBoxLayout *page) {
+        auto *g = new QGridLayout;
+        g->setSpacing(3);
+        page->addLayout(g);
+        return g;
+    };
+    auto plain = [this](const QString &text, std::function<void()> fn) {   // a command without a shortcut
+        auto *b = new MenuButton(text, " ");   // the empty hint aligns the text left, like its neighbours
+        connect(b, &QAbstractButton::clicked, this, [this, fn] { menu->dismiss(); fn(); });
+        return b;
+    };
 
+    // ---- Tools ----
+    QVBoxLayout *v = menuTabs->addPage("Tools");
     struct ToolDef { Canvas::Tool tool; const char *name, *key; };
     static const ToolDef tools[] = {   // order matches Canvas::Tool
         {Canvas::Select, "Select", "V"}, {Canvas::Pan, "Pan", "H"}, {Canvas::Pen, "Pen", "P"},
@@ -299,21 +315,18 @@ void MainWindow::buildMenu() {
         {Canvas::ZoneEllipse, "Circle", "O"}, {Canvas::ZonePoly, "Vertices", "G"}, {Canvas::Link, "New link", "J"},
         {Canvas::Token, "Token", "B"}, {Canvas::Fog, "Fog brush", "F"}};
     auto *group = new QButtonGroup(this);
-    QGridLayout *grid = nullptr, *toolsGrid = nullptr;
+    QGridLayout *toolsGrid = newGrid(v), *zonesGrid = nullptr, *linksGrid = nullptr;
+    v->addWidget(ui::caption("Zones"));
+    zonesGrid = newGrid(v);
+    v->addWidget(ui::caption("Links between maps"));
+    linksGrid = newGrid(v);
     for (int i = 0; i < int(std::size(tools)); ++i) {
-        if (i == 0 || i == 8 || i == 11) {
-            v->addWidget(ui::caption(i == 0 ? "Tools" : i == 8 ? "Zones" : "Links between maps"));
-            grid = new QGridLayout;
-            grid->setSpacing(3);
-            v->addLayout(grid);
-            if (i == 0) toolsGrid = grid;
-        }
         const ToolDef t = tools[i];
         auto *b = new MenuButton(t.name, t.key);
         b->setCheckable(true);
         group->addButton(b);
         const int k = i < 8 ? i : i < 11 ? i - 8 : i == 11 ? 0 : i - 4;   // Token and Fog brush go after Calibrate
-        (i >= 12 ? toolsGrid : grid)->addWidget(b, k / 3, k % 3);
+        (i < 8 || i >= 12 ? toolsGrid : i < 11 ? zonesGrid : linksGrid)->addWidget(b, k / 3, k % 3);
         connect(b, &QAbstractButton::clicked, this, [this, t] { menu->dismiss(); canvas->setTool(t.tool); canvas->setFocus(); });
         toolButtons << b;
     }
@@ -322,7 +335,7 @@ void MainWindow::buildMenu() {
     connect(linksButton, &QAbstractButton::clicked, this, [this](bool on) { menu->dismiss(); canvas->showLinks(on); });
     // Queued: the signal can come from the layer list's own itemChanged, and rebuilding the list there frees the item Qt is using.
     connect(canvas, &Canvas::linksShown, this, [this](bool on) { linksButton->setChecked(on); refreshLayers(); }, Qt::QueuedConnection);
-    grid->addWidget(linksButton, 0, 1, 1, 2);
+    linksGrid->addWidget(linksButton, 0, 1, 1, 2);
     fogButton = new MenuButton("Opaque fog");
     fogButton->setCheckable(true);
     fogButton->setTip("On: the fog hides the map, as the players would see it. Off: it only darkens the map.");
@@ -332,9 +345,7 @@ void MainWindow::buildMenu() {
         scene->update();
         setDirty(true);   // saved with the project
     });
-    toolsGrid->addWidget(fogButton, 3, 1, 1, 2);
     connect(canvas, &Canvas::toolChanged, this, [this](int t) { toolButtons[t]->setChecked(true); });
-
     v->addWidget(ui::caption("Colour and width"));
     menuSwatches = new SwatchRow;
     connect(menuSwatches, &SwatchRow::picked, this, [this](const QColor &c) { canvas->color = c; });
@@ -350,9 +361,30 @@ void MainWindow::buildMenu() {
     row->addWidget(widthLabel);
     v->addLayout(row);
 
-    v->addWidget(ui::caption("View"));
-    grid = new QGridLayout;
-    grid->setSpacing(3);
+    // ---- Edit ----
+    QGridLayout *grid = newGrid(menuTabs->addPage("Edit"));
+    grid->addWidget(menuButton(action("Undo", QKeySequence("Ctrl+Z"), [this] { undo(); })), 0, 0);
+    QAction *redoAction = action("Redo", QKeySequence("Ctrl+Y"), [this] { redo(); });
+    redoAction->setShortcuts({QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")});
+    grid->addWidget(menuButton(redoAction), 0, 1);
+    grid->addWidget(menuButton(action("Find…", QKeySequence("Ctrl+F"), [this] { showFind(); })), 0, 2);
+    grid->addWidget(menuButton(action("Copy", QKeySequence("Ctrl+C"), [this] { copySelection(); })), 1, 0);
+    action("Paste", QKeySequence("Ctrl+V"), [this] { paste(); });
+    auto *pasteButton = new MenuButton("Paste", "Ctrl+V");   // from the menu the items go where the menu was opened
+    connect(pasteButton, &QAbstractButton::clicked, this, [this] {
+        menu->dismiss();
+        pasteAt(clipboardItems(), canvas->mapToScene(canvas->viewport()->mapFrom(canvas, menuAt)));
+    });
+    grid->addWidget(pasteButton, 1, 1);
+    grid->addWidget(menuButton(action("Duplicate", QKeySequence("Ctrl+D"), [this] { duplicate(); })), 1, 2);
+    grid->addWidget(menuButton(action("Move to the active layer", QKeySequence("Ctrl+M"), [this] { moveSelectionToActiveLayer(); })), 2, 0, 1, 2);
+    auto *del = new MenuButton("Delete", "Del");
+    del->ink = ui::danger;
+    connect(del, &QAbstractButton::clicked, this, [this] { menu->dismiss(); canvas->deleteSelected(); });
+    grid->addWidget(del, 2, 2);
+
+    // ---- View ----
+    grid = newGrid(menuTabs->addPage("View"));
     snapButton = new MenuButton("Snap to grid", "S");
     snapButton->setCheckable(true);
     connect(snapButton, &QAbstractButton::toggled, this, [](bool on) { snapEnabled = on; });
@@ -374,25 +406,18 @@ void MainWindow::buildMenu() {
                         canvas->centerOn(c);
                         emit canvas->zoomChanged(1);
                     })), 1, 1);
-    grid->addWidget(menuButton(action("Find…", QKeySequence("Ctrl+F"), [this] { showFind(); })), 1, 2);
     minimapButton = new MenuButton("Minimap");
     minimapButton->setCheckable(true);
     minimapButton->setChecked(true);
     connect(minimapButton, &QAbstractButton::toggled, this, [this](bool on) { minimap->setProperty("wanted", on); placeOverlays(); });
-    grid->addWidget(minimapButton, 2, 0);
-    grid->addWidget(menuButton(action("Shortcuts", QKeySequence(Qt::Key_F1), [this] { showShortcuts(); })), 2, 1);
+    grid->addWidget(minimapButton, 1, 2);
+    grid->addWidget(menuButton(action("Shortcuts", QKeySequence(Qt::Key_F1), [this] { showShortcuts(); })), 2, 0);
+    grid->addWidget(fogButton, 2, 1);
     action("Zoom in", QKeySequence::ZoomIn, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(1.25); });
     action("Zoom out", QKeySequence::ZoomOut, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(0.8); });
-    v->addLayout(grid);
 
-    v->addWidget(ui::caption("Project"));
-    grid = new QGridLayout;
-    grid->setSpacing(3);
-    auto plain = [this](const QString &text, std::function<void()> fn) {   // a command without a shortcut
-        auto *b = new MenuButton(text, " ");   // the empty hint aligns the text left, like its neighbours
-        connect(b, &QAbstractButton::clicked, this, [this, fn] { menu->dismiss(); fn(); });
-        return b;
-    };
+    // ---- Project ----
+    grid = newGrid(menuTabs->addPage("Project"));
     // two columns: with their shortcuts, three Portuguese names do not fit in a row
     grid->addWidget(menuButton(action("New", QKeySequence::New, [this] { if (maybeSave()) newProject(); })), 0, 0);
     grid->addWidget(menuButton(action("Open…", QKeySequence::Open, [this] { open(); })), 0, 1);
@@ -414,30 +439,7 @@ void MainWindow::buildMenu() {
     languageButton->literal = true;   // each language's own name
     grid->addWidget(languageButton, 5, 0);
     grid->addWidget(menuButton(action("Quit", QKeySequence("Ctrl+Q"), [this] { close(); })), 5, 1);
-    v->addLayout(grid);
-
-    v->addWidget(ui::caption("Edit"));
-    grid = new QGridLayout;
-    grid->setSpacing(3);
-    grid->addWidget(menuButton(action("Undo", QKeySequence("Ctrl+Z"), [this] { undo(); })), 0, 0);
-    QAction *redoAction = action("Redo", QKeySequence("Ctrl+Y"), [this] { redo(); });
-    redoAction->setShortcuts({QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")});
-    grid->addWidget(menuButton(redoAction), 0, 1);
-    action("Paste", QKeySequence("Ctrl+V"), [this] { paste(); });
-    action("Copy", QKeySequence("Ctrl+C"), [this] { copySelection(); });       // these two are buttons in the properties popups
-    action("Duplicate", QKeySequence("Ctrl+D"), [this] { duplicate(); });
-    auto *pasteButton = new MenuButton("Paste", "Ctrl+V");   // from the menu the items go where the menu was opened
-    connect(pasteButton, &QAbstractButton::clicked, this, [this] {
-        menu->dismiss();
-        pasteAt(clipboardItems(), canvas->mapToScene(canvas->viewport()->mapFrom(canvas, menuAt)));
-    });
-    grid->addWidget(pasteButton, 0, 2);
-    auto *del = new MenuButton("Delete", "Del");
-    del->ink = ui::danger;
-    connect(del, &QAbstractButton::clicked, this, [this] { menu->dismiss(); canvas->deleteSelected(); });
-    grid->addWidget(del, 1, 2);
-    grid->addWidget(menuButton(action("Move to the active layer", QKeySequence("Ctrl+M"), [this] { moveSelectionToActiveLayer(); })), 1, 0, 1, 2);
-    v->addLayout(grid);
+    menuTabs->setCurrent(0);
 }
 
 void MainWindow::openMenu(QPoint at) {
@@ -475,7 +477,7 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         connect(b, &QAbstractButton::clicked, this, [this] { props->dismiss(); canvas->deleteSelected(); });
         return b;
     };
-    auto copyRow = [this, v] {
+    auto copyRow = [this, &v] {   // by reference: into the page being filled
         auto *row = new QHBoxLayout;
         row->setSpacing(3);
         for (bool copy : {true, false}) {
@@ -485,7 +487,7 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         }
         v->addLayout(row);
     };
-    auto colorRow = [this, v](const QColor &current, std::function<void(const QColor &)> apply) {
+    auto colorRow = [this, &v](const QColor &current, std::function<void(const QColor &)> apply) {
         v->addWidget(ui::caption("Colour"));
         auto *s = new SwatchRow;
         s->setCurrent(current);
@@ -534,7 +536,10 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
             v->addWidget(locate);
         }
         const Calibration &cal = m->cal;
-        v->addWidget(ui::caption("Grid"));
+        auto *tabs = new Tabs;
+        v->addWidget(tabs);
+        QVBoxLayout *mapPage = v;
+        v = tabs->addPage("Grid");
         auto *kind = new QLabel(!cal.valid() ? T("Not calibrated yet.")
                                 : T("%1, cell of %2 px%3").arg(T(cal.grid == Calibration::Square ? "Squares" : cal.grid == Calibration::HexPointy ? "Hexes, pointy top" : "Hexes, flat top"))
                                       .arg(cal.cellSize(), 0, 'f', 2)
@@ -598,7 +603,7 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
             }
             v->addLayout(rules);
         }
-        v->addWidget(ui::caption("Fog of war"));
+        v = tabs->addPage("Fog of war");
         auto *fog = new MenuButton("Cover the map with fog");
         fog->setCheckable(true);
         fog->setChecked(!m->fog.isNull());
@@ -611,6 +616,19 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
             setDirty(true);
         });
         v->addWidget(fog);
+        auto *opaque = new MenuButton("Opaque fog");   // the project's setting, here too
+        opaque->setCheckable(true);
+        opaque->setChecked(fogOpaque);
+        opaque->setTip("On: the fog hides the map, as the players would see it. Off: it only darkens the map.");
+        connect(opaque, &QAbstractButton::toggled, fogButton, &QAbstractButton::setChecked);
+        v->addWidget(opaque);
+        auto *brush = new QLabel(T("The fog brush (F) reveals where it passes. Alt + drag covers again."));
+        brush->setWordWrap(true);
+        brush->setStyleSheet(QString("color: %1;").arg(ui::muted.name()));
+        v->addWidget(brush);
+        tabs->setCurrent(lastMapTab);
+        connect(tabs, &Tabs::currentChanged, this, [this](int i) { lastMapTab = i; });
+        v = mapPage;
         v->addSpacing(4);
         copyRow();
         v->addWidget(deleteButton("Remove map"));
@@ -638,6 +656,10 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         v->addWidget(deleteButton("Delete link (both ends)"));
     } else if (auto *k = qgraphicsitem_cast<TokenItem *>(it)) {
         title(T("Token"));
+        auto *tabs = new Tabs;
+        v->addWidget(tabs);
+        QVBoxLayout *tokenPage = v;
+        v = tabs->addPage("Token");
         v->addWidget(ui::caption("Name"));
         auto *name = new QLineEdit(k->name);
         connect(name, &QLineEdit::textChanged, this, [this, k](const QString &n) { k->name = n; k->update(); setDirty(true); });
@@ -664,7 +686,7 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         v->addLayout(sizes);
 
         // Vision: clears the fog where the token lands, measured with the calibration of the map under it.
-        v->addWidget(ui::caption("Vision"));
+        v = tabs->addPage("Vision");
         const MapItem *under = mapAt(scene, k->centre(), true);
         auto *sight = new QDoubleSpinBox;
         sight->setRange(0, 1e6);
@@ -725,6 +747,9 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
             hint->setWordWrap(true);
             v->addWidget(hint);
         }
+        tabs->setCurrent(lastTokenTab);
+        connect(tabs, &Tabs::currentChanged, this, [this](int i) { lastTokenTab = i; });
+        v = tokenPage;
         v->addSpacing(4);
         copyRow();
         v->addWidget(deleteButton("Delete token"));
@@ -1578,6 +1603,7 @@ void MainWindow::restoreSession() {
     }
     widthSlider->setValue(s.value("width", 4).toInt());
     minimapButton->setChecked(s.value("minimap", true).toBool());
+    menuTabs->setCurrent(s.value("menuTab", 0).toInt());
     const int tool = s.value("tool", Canvas::Select).toInt();
     show();
     if (tool >= Canvas::Select && tool <= Canvas::Fog && tool != Canvas::Calibrate && tool != Canvas::Link) canvas->setTool(Canvas::Tool(tool));
@@ -1597,6 +1623,7 @@ void MainWindow::saveSession() {
     s.setValue("tool", int(canvas->tool()));
     s.setValue("color", canvas->color.name(QColor::HexArgb));
     s.setValue("width", widthSlider->value());
+    s.setValue("menuTab", menuTabs->current());
 }
 
 void MainWindow::showShortcuts() {
