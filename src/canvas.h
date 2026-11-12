@@ -1,6 +1,8 @@
 #pragma once
 #include <QGraphicsView>
 #include <QHash>
+#include <QImage>
+#include <QPointer>
 #include <QVariantAnimation>
 
 class Calibrator;
@@ -38,12 +40,17 @@ void snapToken(TokenItem *t);
 QList<MapItem *> revealSight(TokenItem *t, bool commit = true);
 // What is seen from c up to distance r when walls stop the view (scene coordinates). Empty: no wall nearby.
 QPolygonF visibleFrom(QGraphicsScene *s, QPointF c, double r);
+// The room around `p` (item coordinates of a calibrated map) as a mask over the whole map, 255 inside: the floor
+// joined to p in the map's picture, cut at its walls, at closed doors and walls drawn on it, and at openings about a
+// cell wide (doorways). Null when no room is found there.
+QImage roomMask(MapItem *m, QPointF p);
 
 class Canvas : public QGraphicsView {
     Q_OBJECT
 public:
     // Order matches the menu.
-    enum Tool { Select, Pan, Pen, Eraser, Text, Note, Measure, Calibrate, ZoneRect, ZoneEllipse, ZonePoly, Link, Token, Fog };
+    enum Tool { Select, Pan, Pen, Eraser, Text, Note, Measure, Calibrate, ZoneRect, ZoneEllipse, ZonePoly, Link, Token, Fog,
+                Wall, Door, AreaSphere, AreaCone, AreaLine };
     explicit Canvas(QGraphicsScene *scene, QWidget *parent = nullptr);
     void setTool(Tool t);
     Tool tool() const { return currentTool; }
@@ -52,9 +59,13 @@ public:
     bool layerUsable();
     void deleteSelected();
     void cancelDrafts();
-    void clearRulers();
+    void clearRulers();   // and the spell areas
     int rulerCount() const { return int(rulers.size()); }
     QString rulerText(int i) const;   // what the ruler's last label shows
+    int areaCount() const { return int(areas.size()); }
+    QString areaText(int i) const { return i >= 0 && i < areas.size() ? areas[i].text : QString(); }
+    void toggleDoor(StrokeItem *door);   // opens or closes it; the tokens look again
+    bool loupeShown() const;
     void travel(LinkItem *from, QPointF scenePoint);
     void glideTo(QPointF sceneCentre);   // animated move of the view
     void showLinks(bool on);
@@ -97,7 +108,15 @@ private:
         QList<QGraphicsItem *> marks;
         QString text;
     };
+    struct Area {   // a spell area: transient like a ruler, Esc clears it
+        QGraphicsPathItem *cells = nullptr;
+        LabelItem *label = nullptr;
+        QString text;
+    };
     QPointF snapped(QPointF p, bool centre = false) const;
+    void updateArea(QPointF scenePos);
+    void finishWall();
+    void revealRoom(QPointF scenePos, bool cover);
     bool alive(QGraphicsItem *it) const;
     LinkItem *linkAt(QPoint viewPos) const;
     LinkItem *unpairedLink(const LinkItem *except = nullptr) const;
@@ -125,4 +144,11 @@ private:
     QVariantAnimation camera;
     QHash<QGraphicsItem *, QPointF> pressPositions;
     QList<MapItem *> sightTouched;   // fog cleared by tokens during a drag, saved on the drop
+    StrokeItem *wallDraft = nullptr; // a wall being clicked corner by corner, or a door being dragged
+    QList<Area> areas;
+    int dragArea = -1;
+    QPointer<QObject> areaMap;       // the map the dragged area is counted on
+    QPointF areaOrigin;              // its item coordinates
+    QWidget *loupe;                  // calibration magnifier, while the button is held
+    bool marking = false;
 };

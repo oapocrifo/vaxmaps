@@ -63,6 +63,8 @@ public:
     explicit MenuButton(const QString &text, const QString &hint = {}, QWidget *parent = nullptr);
     QSize sizeHint() const override;
     void setTip(const QString &english);
+    QString shownText() const { return label(); }   // in the interface language
+    QString keyHint() const { return hint; }
     QColor tint = ui::accent;   // background when checked
     QColor ink = ui::text;      // label colour (ui::danger for destructive actions)
     bool literal = false;       // a file or item name: shown as it is
@@ -124,7 +126,7 @@ class Tabs : public QWidget {
     Q_OBJECT
 public:
     explicit Tabs(QWidget *parent = nullptr);
-    QVBoxLayout *addPage(const QString &english);   // the new page's layout
+    QVBoxLayout *addPage(const QString &english, const QString &key = {});   // the new page's layout
     void setCurrent(int i);
     int current() const { return index; }
     int count() const { return int(buttons.size()); }

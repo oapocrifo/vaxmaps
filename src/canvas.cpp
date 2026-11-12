@@ -9,11 +9,15 @@
 #include <QSet>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QImageReader>
+#include <QGuiApplication>
+#include <QPainter>
 #include <QScrollBar>
 #include <QSettings>
 #include <QUuid>
 #include <QWheelEvent>
 #include <cmath>
+#include <queue>
 
 bool snapEnabled = false;
 
@@ -41,9 +45,109 @@ QString toolHint(Canvas::Tool t) {
     case Canvas::ZonePoly: return T("Vertex zone: click each vertex. Double click, Enter or a click on the first vertex closes it.");
     case Canvas::Link: return T("Link: drag an area, then drag its pair (it can be on another map).");
     case Canvas::Token: return T("Token: click to place one. Dragged, it lands on the grid. Right click it for its name and size.");
-    case Canvas::Fog: return T("Fog brush: drag to reveal, Alt + drag to cover. The width slider sets its size.");
+    case Canvas::Fog: return T("Fog brush: drag to reveal, Alt + drag to cover. The width slider sets its size. Shift + click reveals a whole room.");
+    case Canvas::Wall: return T("Wall: click corner after corner, double click or Enter ends it. Alt places a point off the corners. It blocks token vision.");
+    case Canvas::Door: return T("Door: drag from corner to corner. Double click a door to open or close it.");
+    case Canvas::AreaSphere: return T("Sphere: drag from a corner to its last square. A switches to cone and line. Esc clears the areas.");
+    case Canvas::AreaCone: return T("Cone: drag from a corner to its last square. A switches to line and sphere. Esc clears the areas.");
+    case Canvas::AreaLine: return T("Line: drag from your square to its last square. A switches to sphere and cone. Esc clears the areas.");
     }
     return {};
+}
+
+// Calibration magnifier: the map under the pointer 4 times closer than the view, with a crosshair, beside the pointer.
+class Loupe : public QWidget {
+public:
+    explicit Loupe(Canvas *c) : QWidget(c->viewport()), canvas(c) {
+        setFixedSize(176, 176);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        hide();
+    }
+    void showAt(QPointF scenePos, QPoint vp) {
+        at = scenePos;
+        QPoint pos = vp - QPoint(width() + 24, height() + 24);   // above and left of the pointer, so the hand does not cover it
+        if (pos.x() < 0) pos.setX(vp.x() + 24);
+        if (pos.y() < 0) pos.setY(vp.y() + 24);
+        move(pos);
+        show();
+        raise();
+        update();
+    }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+        const QRectF r = QRectF(rect()).adjusted(2, 2, -2, -2);
+        QPainterPath round;
+        round.addEllipse(r);
+        p.setClipPath(round);
+        p.fillRect(r, QColor(36, 37, 41));
+        const double z = canvas->zoom() * 4;
+        const bool was = syncTiles;
+        syncTiles = true;   // the finer tiles it needs load now: it is drawn once per mouse move
+        canvas->scene()->render(&p, r, QRectF(at - QPointF(r.width(), r.height()) / (2 * z), r.size() / z));
+        syncTiles = was;
+        p.setClipping(false);
+        const QPointF c = r.center();
+        p.setPen(QPen(QColor(255, 210, 60), 1.5));
+        for (QPointF d : {QPointF(1, 0), QPointF(-1, 0), QPointF(0, 1), QPointF(0, -1)}) p.drawLine(c + 4 * d, c + 16 * d);
+        p.setPen(QPen(QColor(255, 255, 255, 110), 2));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(r);
+    }
+private:
+    Canvas *canvas;
+    QPointF at;
+};
+
+// Chamfer distance (3 a step, 4 a diagonal step) of each pixel of a w x h grid to the nearest one where `zero` is set.
+std::vector<int> chamfer(const std::vector<uchar> &zero, int w, int h) {
+    std::vector<int> d(size_t(w) * h);
+    for (size_t i = 0; i < d.size(); ++i) d[i] = zero[i] ? 0 : 1 << 28;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            int &v = d[size_t(y) * w + x];
+            if (x > 0) v = std::min(v, d[size_t(y) * w + x - 1] + 3);
+            if (y > 0) {
+                v = std::min(v, d[size_t(y - 1) * w + x] + 3);
+                if (x > 0) v = std::min(v, d[size_t(y - 1) * w + x - 1] + 4);
+                if (x < w - 1) v = std::min(v, d[size_t(y - 1) * w + x + 1] + 4);
+            }
+        }
+    for (int y = h - 1; y >= 0; --y)
+        for (int x = w - 1; x >= 0; --x) {
+            int &v = d[size_t(y) * w + x];
+            if (x < w - 1) v = std::min(v, d[size_t(y) * w + x + 1] + 3);
+            if (y < h - 1) {
+                v = std::min(v, d[size_t(y + 1) * w + x] + 3);
+                if (x < w - 1) v = std::min(v, d[size_t(y + 1) * w + x + 1] + 4);
+                if (x > 0) v = std::min(v, d[size_t(y + 1) * w + x - 1] + 4);
+            }
+        }
+    return d;
+}
+
+// The map's picture at about 10 px a cell: the overview when it is fine enough, else read again (the last one is kept).
+QImage roomPicture(MapItem *m, double *scale) {
+    static QString cachedPath;
+    static QImage cached;
+    const QSize full = m->src->size;
+    if (full.isEmpty()) return {};
+    const double want = std::min({1.0, 10 / m->cal.cellSize(), 2048.0 / std::max(full.width(), full.height())});
+    const QImage &ov = m->src->overview;
+    if (!ov.isNull() && ov.width() >= full.width() * want * 0.7) {
+        *scale = double(ov.width()) / full.width();
+        return ov.convertToFormat(QImage::Format_RGB32);
+    }
+    const QSize size = (QSizeF(full) * want).toSize();
+    if (cachedPath != m->src->path || cached.size() != size) {
+        QImageReader r(m->src->path);
+        r.setScaledSize(size);
+        cached = r.read().convertToFormat(QImage::Format_RGB32);
+        cachedPath = m->src->path;
+    }
+    *scale = cached.isNull() ? 1 : double(cached.width()) / full.width();
+    return cached;
 }
 
 const QColor linkColours[] = {QColor(60, 200, 255), QColor(255, 150, 40), QColor(170, 110, 255), QColor(80, 220, 120), QColor(255, 90, 160)};
@@ -115,7 +219,7 @@ QPolygonF visibleFrom(QGraphicsScene *s, QPointF c, double r) {
     const QRectF reach(c.x() - r, c.y() - r, 2 * r, 2 * r);
     QVector<QLineF> walls;
     for (QGraphicsItem *it : s->items(reach))
-        if (auto *w = qgraphicsitem_cast<StrokeItem *>(it); w && w->wall && w->isVisible())
+        if (auto *w = qgraphicsitem_cast<StrokeItem *>(it); w && w->blocksSight() && w->isVisible())
             for (int i = 1; i < w->pts.size(); ++i) {
                 const QLineF l(w->mapToScene(w->pts[i - 1]), w->mapToScene(w->pts[i]));
                 if (reach.intersects(QRectF(l.p1(), l.p2()).normalized().adjusted(-1, -1, 1, 1))) walls << l;
@@ -186,6 +290,7 @@ Canvas::Canvas(QGraphicsScene *scene, QWidget *parent) : QGraphicsView(scene, pa
     eraserRing->setZValue(1e6);
     eraserRing->hide();
     calibrator = new Calibrator(this);
+    loupe = new Loupe(this);
     camera.setEasingCurve(QEasingCurve::InOutCubic);
     connect(&camera, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) { centerOn(v.toPointF()); });
 }
@@ -206,7 +311,7 @@ void Canvas::setTool(Tool t) {
     QSettings settings;
     const QString seen = QString("hints/%1").arg(int(t));
     const int times = settings.value(seen, 0).toInt();
-    const char keys[] = "VHPETNMKROGJBF";   // order of Canvas::Tool
+    const char keys[] = "VHPETNMKROGJBFWDAAA";   // order of Canvas::Tool
     if (times < 3) settings.setValue(seen, times + 1);
     emit status(times < 3 ? toolHint(t) : QString("%1 · %2").arg(toolHint(t).section(':', 0, 0)).arg(QChar(keys[t])));
     if (t == Calibrate) {
@@ -232,6 +337,9 @@ void Canvas::updateCursor() {
 void Canvas::cancelDrafts() {
     delete draft;
     draft = nullptr;
+    delete wallDraft;
+    wallDraft = nullptr;
+    dragArea = -1;
     stroke = nullptr;
     erasing = false;
     dragRuler = -1;
@@ -367,8 +475,45 @@ void Canvas::mousePressEvent(QMouseEvent *e) {
         return;
     }
     case Calibrate:
-        calibrator->mousePress(sp);
+        if (!calibrator->wantsPoint()) { calibrator->mousePress(sp); return; }
+        marking = true;   // the point is taken where the button is released: the loupe helps put it there
+        static_cast<Loupe *>(loupe)->showAt(sp, vp);
         return;
+    case Wall:
+    case Door: {
+        if (!layerUsable()) return;
+        const QPointF p = e->modifiers() & Qt::AltModifier ? sp : snapPoint(scene(), sp);
+        if (wallDraft) {   // the next corner of a wall
+            QVector<QPointF> pts = wallDraft->pts;
+            pts.last() = p;
+            pts << p;
+            wallDraft->setPoints(pts);
+            return;
+        }
+        wallDraft = new StrokeItem(color, penWidth / zoom());
+        wallDraft->wall = true;
+        wallDraft->door = currentTool == Door;
+        wallDraft->setParentItem(activeLayer);
+        wallDraft->setPoints({p, p});
+        return;
+    }
+    case AreaSphere:
+    case AreaCone:
+    case AreaLine: {
+        MapItem *m = mapAt(scene(), sp, true);
+        if (!m) { emit status(T("Map not calibrated (K)")); return; }
+        areaMap = m;
+        areaOrigin = m->mapFromScene(snapPoint(scene(), sp, currentTool == AreaLine || m->cal.isHex()));
+        Area a;
+        a.cells = scene()->addPath(QPainterPath());
+        a.cells->setZValue(1e6 - 1);
+        a.label = new LabelItem;
+        scene()->addItem(a.label);
+        areas << a;
+        dragArea = int(areas.size()) - 1;
+        updateArea(sp);
+        return;
+    }
     case Token: {
         if (!layerUsable()) return;
         int n = 0;
@@ -384,6 +529,7 @@ void Canvas::mousePressEvent(QMouseEvent *e) {
         return;
     }
     case Fog:
+        if (e->modifiers() & Qt::ShiftModifier) { revealRoom(sp, e->modifiers() & Qt::AltModifier); return; }
         fogging = true;
         fogCover = e->modifiers() & Qt::AltModifier;
         fogLast = sp;
@@ -449,6 +595,14 @@ void Canvas::mouseMoveEvent(QMouseEvent *e) {
         }
     }
     if (pressedLink) return;
+    if (marking) { static_cast<Loupe *>(loupe)->showAt(sp, vp); return; }
+    if (wallDraft) {
+        QVector<QPointF> pts = wallDraft->pts;
+        pts.last() = e->modifiers() & Qt::AltModifier ? sp : snapPoint(scene(), sp);
+        wallDraft->setPoints(pts);
+        return;
+    }
+    if (dragArea >= 0) { updateArea(sp); return; }
     if (currentTool == Fog) {
         const double r = fogWidth() / 2;
         eraserRing->setRect(QRectF(sp - QPointF(r, r), QSizeF(2 * r, 2 * r)));
@@ -506,6 +660,21 @@ void Canvas::mouseReleaseEvent(QMouseEvent *e) {
         return;
     }
     if (stroke) { stroke = nullptr; sceneEdited(); return; }
+    if (marking) {
+        marking = false;
+        loupe->hide();
+        calibrator->mousePress(mapToScene(vp));
+        return;
+    }
+    if (wallDraft && wallDraft->door) {
+        StrokeItem *d = wallDraft;
+        wallDraft = nullptr;
+        if (QLineF(d->pts.first(), d->pts.last()).length() * zoom() < 4) { delete d; return; }   // a click, not a drag
+        sceneEdited();
+        return;
+    }
+    if (wallDraft) return;   // a wall ends with a double click or Enter
+    if (dragArea >= 0) { dragArea = -1; return; }   // the area stays until Esc
     if (erasing) { erasing = false; if (erasedAny) sceneEdited(); return; }
     if (fogging) {
         fogging = false;
@@ -570,6 +739,10 @@ void Canvas::finishLink(LinkItem *l) {
 
 void Canvas::mouseDoubleClickEvent(QMouseEvent *e) {
     if (draft && draft->shapeKind == ZoneItem::Poly) { finishPoly(); return; }
+    if (wallDraft && !wallDraft->door) { finishWall(); return; }
+    if (currentTool == Select)
+        for (QGraphicsItem *it : items(e->position().toPoint()))
+            if (auto *d = qgraphicsitem_cast<StrokeItem *>(it); d && d->door) { toggleDoor(d); return; }
     if (linksVisible && currentTool == Select)
         if (LinkItem *l = linkAt(e->position().toPoint())) { travel(l, mapToScene(e->position().toPoint())); return; }
     QGraphicsView::mouseDoubleClickEvent(e);
@@ -623,6 +796,9 @@ void Canvas::eraseAt(QPointF sp) {
         s->setPoints(runs[0]);
         for (int i = 1; i < runs.size(); ++i) {
             auto *n = new StrokeItem(s->pen().color(), s->pen().widthF());
+            n->wall = s->wall;   // a wall cut in two is two walls
+            n->door = s->door;
+            n->open = s->open;
             n->setParentItem(s->parentItem());
             n->setPos(s->pos());
             n->setPoints(runs[i]);
@@ -686,6 +862,12 @@ void Canvas::deleteRuler(int i) {
 void Canvas::clearRulers() {
     while (!rulers.isEmpty()) deleteRuler(0);
     dragRuler = -1;
+    for (const Area &a : areas) {
+        delete a.cells;
+        delete a.label;
+    }
+    areas.clear();
+    dragArea = -1;
 }
 
 QString Canvas::rulerText(int i) const { return i >= 0 && i < rulers.size() ? rulers[i].text : QString(); }
@@ -732,8 +914,12 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
     static const QHash<int, Tool> keys{{Qt::Key_V, Select}, {Qt::Key_H, Pan}, {Qt::Key_P, Pen}, {Qt::Key_E, Eraser},
                                        {Qt::Key_T, Text}, {Qt::Key_N, Note}, {Qt::Key_M, Measure}, {Qt::Key_K, Calibrate},
                                        {Qt::Key_R, ZoneRect}, {Qt::Key_O, ZoneEllipse}, {Qt::Key_G, ZonePoly}, {Qt::Key_J, Link},
-                                       {Qt::Key_B, Token}, {Qt::Key_F, Fog}};
+                                       {Qt::Key_B, Token}, {Qt::Key_F, Fog}, {Qt::Key_W, Wall}, {Qt::Key_D, Door}};
     if (keys.contains(e->key()) && !(e->modifiers() & Qt::ShiftModifier)) { setTool(keys[e->key()]); return; }
+    if (e->key() == Qt::Key_A && !(e->modifiers() & Qt::ShiftModifier)) {   // sphere, cone, line, sphere...
+        setTool(currentTool == AreaSphere ? AreaCone : currentTool == AreaCone ? AreaLine : AreaSphere);
+        return;
+    }
     switch (e->key()) {
     case Qt::Key_L:
         emit toggleLayersRequested();
@@ -758,6 +944,7 @@ void Canvas::keyPressEvent(QKeyEvent *e) {
     case Qt::Key_Return:
     case Qt::Key_Enter:
         if (draft && draft->shapeKind == ZoneItem::Poly) finishPoly();
+        if (wallDraft && !wallDraft->door) finishWall();
         return;
     case Qt::Key_Left:
     case Qt::Key_Right:
@@ -816,4 +1003,212 @@ void Canvas::dropEvent(QDropEvent *e) {
     if (files.isEmpty()) return;
     e->acceptProposedAction();
     emit filesDropped(files, mapToScene(e->position().toPoint()));
+}
+
+QImage roomMask(MapItem *m, QPointF at) {
+    if (!m->cal.valid() || !m->src->ready) return {};
+    double s = 1;
+    const QImage pic = roomPicture(m, &s);
+    if (pic.isNull()) return {};
+    const int w = pic.width(), h = pic.height();
+    const double cw = m->cal.cellSize() * s;   // a cell, in pixels of `pic`
+    auto px = [&](int x, int y) { return reinterpret_cast<const QRgb *>(pic.constScanLine(y))[x]; };
+    // Median of each channel over about a third of a cell: thin grid lines and texture go, walls stay.
+    const int r = std::max(1, int(std::lround(cw * 0.15)));
+    std::vector<QRgb> med(size_t(w) * h);
+    std::vector<int> ch[3];
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            for (auto &c : ch) c.clear();
+            for (int dy = -r; dy <= r; ++dy)
+                for (int dx = -r; dx <= r; ++dx) {
+                    const QRgb v = px(qBound(0, x + dx, w - 1), qBound(0, y + dy, h - 1));
+                    ch[0].push_back(qRed(v));
+                    ch[1].push_back(qGreen(v));
+                    ch[2].push_back(qBlue(v));
+                }
+            int out[3];
+            for (int k = 0; k < 3; ++k) {
+                std::nth_element(ch[k].begin(), ch[k].begin() + ch[k].size() / 2, ch[k].end());
+                out[k] = ch[k][ch[k].size() / 2];
+            }
+            med[size_t(y) * w + x] = qRgb(out[0], out[1], out[2]);
+        }
+    auto distance = [](QRgb a, QRgb b) { return std::hypot(qRed(a) - qRed(b), std::hypot(qGreen(a) - qGreen(b), qBlue(a) - qBlue(b))); };
+    // The floor's colour: the median around the point. How far a pixel may stray from it: from the spread there.
+    const QPoint c(qBound(0, int(at.x() * s), w - 1), qBound(0, int(at.y() * s), h - 1));
+    const int rs = std::max(2, int(cw / 2));
+    std::vector<QRgb> around;
+    for (int y = std::max(0, c.y() - rs); y <= std::min(h - 1, c.y() + rs); ++y)
+        for (int x = std::max(0, c.x() - rs); x <= std::min(w - 1, c.x() + rs); ++x) around.push_back(med[size_t(y) * w + x]);
+    int seed[3];
+    for (int k = 0; k < 3; ++k) {
+        std::vector<int> v;
+        for (QRgb q : around) v.push_back(k == 0 ? qRed(q) : k == 1 ? qGreen(q) : qBlue(q));
+        std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+        seed[k] = v[v.size() / 2];
+    }
+    const QRgb floor = qRgb(seed[0], seed[1], seed[2]);
+    std::vector<double> spread;
+    for (QRgb q : around) spread.push_back(distance(q, floor));
+    std::nth_element(spread.begin(), spread.begin() + spread.size() / 2, spread.end());
+    const double tolerance = qBound(32.0, 2.5 * spread[spread.size() / 2] + 24, 90.0);
+    // Floor: close to that colour, and not under a wall or a closed door drawn over the map.
+    QImage drawn(w, h, QImage::Format_Grayscale8);
+    drawn.fill(0);
+    {
+        QPainter p(&drawn);
+        p.setPen(QPen(Qt::white, std::max(2.0, cw * 0.15), Qt::SolidLine, Qt::RoundCap));
+        for (QGraphicsItem *it : m->scene()->items(m->sceneBoundingRect()))
+            if (auto *st = qgraphicsitem_cast<StrokeItem *>(it); st && st->blocksSight() && st->isVisible()) {
+                QPolygonF line;
+                for (QPointF q : st->pts) line << m->mapFromScene(st->mapToScene(q)) * s;
+                p.drawPolyline(line);
+            }
+    }
+    std::vector<uchar> wall(size_t(w) * h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            wall[size_t(y) * w + x] = distance(med[size_t(y) * w + x], floor) > tolerance || drawn.constScanLine(y)[x];
+    // Cores: floor farther than about half a cell from anything else. A doorway a cell wide has none, a room has.
+    const std::vector<int> d = chamfer(wall, w, h);
+    double rd = 0;
+    int start = -1;
+    for (double share : {0.55, 0.25}) {   // a corridor a cell wide has only thinner cores
+        rd = share * cw;
+        double best = 1e300;
+        const int reach = std::max(2, int(cw));
+        for (int y = std::max(0, c.y() - reach); y <= std::min(h - 1, c.y() + reach); ++y)
+            for (int x = std::max(0, c.x() - reach); x <= std::min(w - 1, c.x() + reach); ++x)
+                if (d[size_t(y) * w + x] > 3 * rd && std::hypot(x - c.x(), y - c.y()) < best) {
+                    best = std::hypot(x - c.x(), y - c.y());
+                    start = y * w + x;
+                }
+        if (start >= 0) break;
+    }
+    if (start < 0) return {};
+    // The core around the point, grown back through the floor (not across walls) by the same distance.
+    std::vector<int> grown(size_t(w) * h, 1 << 28);
+    std::vector<int> queue{start};
+    std::vector<uchar> inCore(size_t(w) * h, 0);
+    inCore[start] = 1;
+    for (size_t i = 0; i < queue.size(); ++i) {
+        const int q = queue[i], x = q % w, y = q / w;
+        grown[q] = 0;
+        for (auto [dx, dy] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+            const int nx = x + dx, ny = y + dy, n = ny * w + nx;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h || inCore[n] || d[n] <= 3 * rd) continue;
+            inCore[n] = 1;
+            queue.push_back(n);
+        }
+    }
+    const int limit = int(3 * (rd + 1.5));
+    std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> open;
+    for (int q : queue) open.push({0, q});
+    while (!open.empty()) {
+        const auto [g, q] = open.top();
+        open.pop();
+        if (g > grown[q]) continue;
+        const int x = q % w, y = q / w;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                const int nx = x + dx, ny = y + dy, n = ny * w + nx;
+                if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= w || ny >= h || wall[n]) continue;
+                const int ng = g + (dx && dy ? 4 : 3);
+                if (ng <= limit && ng < grown[n]) { grown[n] = ng; open.push({ng, n}); }
+            }
+    }
+    // Holes (furniture, text, tokens painted on the floor) are filled; then a quarter cell more, so its walls show.
+    std::vector<uchar> outside(size_t(w) * h, 0);
+    std::vector<int> edge;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            if ((x == 0 || y == 0 || x == w - 1 || y == h - 1) && grown[size_t(y) * w + x] > limit) {
+                outside[size_t(y) * w + x] = 1;
+                edge.push_back(y * w + x);
+            }
+    for (size_t i = 0; i < edge.size(); ++i) {
+        const int q = edge[i], x = q % w, y = q / w;
+        for (auto [dx, dy] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+            const int nx = x + dx, ny = y + dy, n = ny * w + nx;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h || outside[n] || grown[n] <= limit) continue;
+            outside[n] = 1;
+            edge.push_back(n);
+        }
+    }
+    std::vector<uchar> room(size_t(w) * h);
+    for (size_t i = 0; i < room.size(); ++i) room[i] = !outside[i];
+    const std::vector<int> toRoom = chamfer(room, w, h);
+    QImage mask(w, h, QImage::Format_Alpha8);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) mask.scanLine(y)[x] = toRoom[size_t(y) * w + x] <= 3 * 0.25 * cw ? 255 : 0;
+    return mask;
+}
+
+bool Canvas::loupeShown() const { return loupe->isVisible(); }
+
+void Canvas::updateArea(QPointF sp) {
+    auto *m = qobject_cast<MapItem *>(areaMap.data());
+    if (!m || dragArea < 0) return;
+    Area &a = areas[dragArea];
+    const AreaShape shape = currentTool == AreaCone ? AreaShape::Cone : currentTool == AreaLine ? AreaShape::Line : AreaShape::Sphere;
+    int length = 0;
+    const QVector<QPoint> cells = areaCells(m->cal, shape, areaOrigin, m->mapFromScene(sp), &length);
+    QPainterPath path;
+    for (QPoint q : cells) path.addPolygon(m->mapToScene(m->cal.cellPolygon(q)));
+    a.cells->setPath(path);
+    QColor fill = color;
+    fill.setAlpha(80);
+    QPen edge(color, 1);
+    edge.setCosmetic(true);
+    a.cells->setPen(edge);
+    a.cells->setBrush(fill);
+    Span span;
+    span.ok = true;
+    span.hex = m->cal.isHex();
+    span.steps = length;
+    span.distance = length * m->cal.unitsPerCell;
+    span.unit = m->cal.unit;
+    static const char *const names[] = {"Sphere", "Cone", "Line"};
+    a.text = QString("%1 %2: %3 %4").arg(T(names[int(shape)]), spanText(span)).arg(cells.size()).arg(T(m->cal.noun(int(cells.size()))));
+    a.label->setText(a.text);
+    a.label->setPos(sp);
+}
+
+void Canvas::finishWall() {
+    StrokeItem *w = wallDraft;
+    wallDraft = nullptr;
+    QVector<QPointF> pts = w->pts;
+    pts.removeLast();   // the corner that followed the pointer
+    while (pts.size() >= 2 && pts.last() == pts[pts.size() - 2]) pts.removeLast();
+    if (pts.size() < 2) { delete w; return; }
+    w->setPoints(pts);
+    sceneEdited();
+}
+
+void Canvas::toggleDoor(StrokeItem *d) {
+    d->open = !d->open;
+    d->jsonHead.clear();   // the undo text has it
+    d->update();
+    for (QGraphicsItem *it : scene()->items())   // through an open door the tokens see more
+        if (auto *k = qgraphicsitem_cast<TokenItem *>(it); k && k->sight > 0) revealSight(k);
+    sceneEdited();
+    emit status(T(d->open ? "Door open: tokens see through it." : "Door closed."));
+}
+
+void Canvas::revealRoom(QPointF sp, bool cover) {
+    MapItem *m = mapAt(scene(), sp, true);
+    if (!m) { emit status(T("Calibrate the map first (K): rooms are measured in its squares.")); return; }
+    if (m->fog.isNull()) {
+        if (!cover) { emit status(T("This map has no fog. Cover it in its properties, Fog of war tab.")); return; }
+        m->enableFog(false);
+    }
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    const QImage room = roomMask(m, m->mapFromScene(sp));
+    QGuiApplication::restoreOverrideCursor();
+    if (room.isNull()) { emit status(T("No room found here.")); return; }
+    m->fogMask(room, cover);
+    m->fogStrokeDone();
+    sceneEdited();
+    emit status(T(cover ? "Room covered." : "Room revealed."));
 }

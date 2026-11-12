@@ -6,6 +6,7 @@
 #include "ui.h"
 #include <QImage>
 #include <QPointer>
+#include <functional>
 #include <optional>
 
 class Canvas;
@@ -48,6 +49,10 @@ struct Measurement { QPointF a, b; };   // image px: two adjacent corners (squar
 // Atlas' calculateFromMeasurements: mean cell size, circular mean of the clicked points for the position.
 // Hexes: the angle between the two centres tells pointy-top (0°) from flat-top (30°).
 Calibration gridFromMeasurements(const QVector<Measurement> &m, bool hex);
+int cachedAnalyses();   // maps whose lines are kept in memory for the calibration panel
+// Detects the grid of each map not calibrated yet, one map after the other in the background (reading one takes about
+// 90 MB for a moment). Found grids are applied as they come; `done` gets how many of how many were calibrated.
+void detectGrids(const QList<MapItem *> &maps, std::function<void(int found, int total)> done);
 
 // Panel shown over the canvas while the Calibrate tool is active.
 class Calibrator : public Panel {
@@ -69,6 +74,7 @@ public:
     int step() const { return stepAt; }   // quarter of the next measurement, 0-3; 4 when all were measured or skipped
     void skip();                          // the quarter has no grid: on to the next
     bool busy() const { return waitingAnalysis || detecting || fitting; }
+    bool wantsPoint() const { return map && stepAt < 4 && !detecting; }   // a click now marks a corner or a centre
     void useCell(double size);   // a grid of this cell size, typed instead of measured
 
 private:
@@ -100,7 +106,8 @@ private:
     QList<QGraphicsItem *> marks;   // children of the map: deleted with it
 
     QLabel *title, *instruction, *progress, *unitsLabel;
-    MenuButton *squaresButton, *hexButton, *detectButton, *skipButton, *applyButton, *againButton;
+    MenuButton *squaresButton, *hexButton, *detectButton, *skipButton, *applyButton, *againButton, *pointyButton, *flatButton;
+    QWidget *topRow;
     QDoubleSpinBox *perCell, *cellSpin;
     QLineEdit *unit;
 };

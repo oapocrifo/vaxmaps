@@ -5,6 +5,7 @@
 #include "mapitem.h"
 
 #include <QApplication>
+#include <QButtonGroup>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -203,7 +204,8 @@ Score detectIn(const Analysis &a, Grid g, double lo, double hi, int region) {
 // border, a title, rooms on black): the quarters whose lines stand out at least half as much as the best one are
 // grouped by cell size (within 8 %: a grid that drifts stays one group), and the group with the most strength wins.
 // A grid seen in one quarter only needs more evidence: twice the strength and, when detected, at least 8 lines
-// across the quarter (a few walls of a room can line up for 3 or 4); in two quarters, at least 6 lines across each. The group's lines together, without the
+// across the quarter (a few walls of a room can line up for 3 or 4); in two quarters, at least 6 lines across
+// each. The group's lines together, without the
 // quarters that show no grid, then refine the cell when they agree (a regular grid: more lines, more precision).
 // A grid that drifts keeps the median, the local corrections do the rest.
 Score combine(const Analysis &a, Grid g, const std::vector<Score> &quarters, bool detecting) {
@@ -478,8 +480,18 @@ bool nearLattice(const Calibration &c, QPointF p) {
     return std::abs(uv.x() - std::round(uv.x())) <= CLICK_TOLERANCE && std::abs(uv.y() - std::round(uv.y())) <= CLICK_TOLERANCE;
 }
 
+// The lines of the last 3 maps read (about 24 MB each): enough to go back and forth between a few maps.
+constexpr int CACHED_ANALYSES = 3;
 QHash<QString, QSharedPointer<const Analysis>> analysisCache;
+QStringList analysisOrder;   // least recently used first
 QSet<QString> analysisLoading;
+
+void keepAnalysis(const QString &path, QSharedPointer<const Analysis> a = {}) {
+    if (a) analysisCache.insert(path, a);
+    analysisOrder.removeAll(path);
+    analysisOrder << path;
+    while (analysisOrder.size() > CACHED_ANALYSES) analysisCache.remove(analysisOrder.takeFirst());
+}
 
 } // namespace
 
@@ -601,7 +613,8 @@ std::optional<GridFit> detectGrid(const Analysis &a) {
     auto spacing = [](const Candidate &c) { return c.g == Calibration::Square ? c.s.cell : c.s.cell / 2; };
     for (const Candidate &c : found)
         if (c.s.strength >= (c.alias ? 0.35 : 0.5) * best && (!pick || spacing(c) < spacing(*pick))) pick = &c;
-    if (!pick) return {};
+    // Faint lines need many of them: walls of a few rooms can repeat for 8 or 10 lines across a map, never for 14.
+    if (!pick || (pick->s.strength < 2 * MIN_DETECTED && spacing(*pick) > 2 * side / 14)) return {};
     GridFit chosen{lattice(a, pick->g, pick->s), pick->s.strength, 0, pick->s.regions >> 1};
     chosen.regions = localField(a, chosen.cal, chosen.strength);
     return chosen;
@@ -634,6 +647,30 @@ Calibration gridFromMeasurements(const QVector<Measurement> &m, bool hex) {
         }
     c.origin += circularMean(us, 1) * c.a + circularMean(vs, 1) * c.b;
     return c;
+}
+
+int cachedAnalyses() { return int(analysisCache.size()); }
+
+void detectGrids(const QList<MapItem *> &maps, std::function<void(int, int)> done) {
+    QList<QPointer<MapItem>> todo;
+    QStringList paths;
+    for (MapItem *m : maps)
+        if (m && !m->cal.valid()) { todo << m; paths << m->src->path; }
+    if (todo.isEmpty()) return done(0, 0);
+    QThreadPool::globalInstance()->start([todo, paths, done] {
+        auto found = QSharedPointer<int>::create(0);
+        for (int i = 0; i < paths.size(); ++i) {
+            const std::optional<GridFit> g = detectGrid(loadAnalysis(paths[i]));
+            QMetaObject::invokeMethod(qApp, [m = todo[i], g, found] {
+                if (!g || !m || m->cal.valid()) return;   // deleted, or calibrated by hand meanwhile
+                m->cal = g->cal;
+                m->update();
+                ++*found;
+                sceneEdited();
+            }, Qt::QueuedConnection);
+        }
+        QMetaObject::invokeMethod(qApp, [found, total = int(paths.size()), done] { done(*found, total); }, Qt::QueuedConnection);
+    });
 }
 
 // ---- panel ----
@@ -686,16 +723,31 @@ Calibrator::Calibrator(Canvas *c) : Panel(c, false), canvas(c) {
     auto *use = new MenuButton("Use");
     form->addWidget(use, 0, 2);
     connect(use, &QAbstractButton::clicked, this, [this] { useCell(cellSpin->value()); });
+    topRow = new QWidget;   // hexes typed in: which way they point
+    auto *tops = new QHBoxLayout(topRow);
+    tops->setContentsMargins(0, 0, 0, 0);
+    tops->setSpacing(3);
+    tops->addWidget(new Label("Top"));
+    pointyButton = new MenuButton("Pointy");
+    flatButton = new MenuButton("Flat");
+    auto *topGroup = new QButtonGroup(this);
+    for (MenuButton *b : {pointyButton, flatButton}) {
+        b->setCheckable(true);
+        topGroup->addButton(b);
+        tops->addWidget(b);
+    }
+    pointyButton->setChecked(true);
+    form->addWidget(topRow, 1, 0, 1, 3);
     unitsLabel = new QLabel;
-    form->addWidget(unitsLabel, 1, 0);
+    form->addWidget(unitsLabel, 2, 0);
     perCell = new QDoubleSpinBox;
     perCell->setRange(0.001, 1e6);
     perCell->setDecimals(2);
     perCell->setButtonSymbols(QAbstractSpinBox::NoButtons);
-    form->addWidget(perCell, 1, 1);
+    form->addWidget(perCell, 2, 1);
     unit = new QLineEdit;
     unit->setMaximumWidth(70);
-    form->addWidget(unit, 1, 2);
+    form->addWidget(unit, 2, 2);
     form->setColumnStretch(1, 1);
     v->addLayout(form);
     auto *buttons = new QHBoxLayout;
@@ -770,6 +822,7 @@ void Calibrator::setHex(bool h) {
     hex = h;
     squaresButton->setChecked(!h);
     hexButton->setChecked(h);
+    topRow->setVisible(h);
     unitsLabel->setText(T(h ? "1 hex =" : "1 square ="));
     if (map) measureAgain();
 }
@@ -979,7 +1032,8 @@ void Calibrator::useCell(double size) {
     measurements.clear();
     stepAt = skipped = 0;
     pointA.reset();
-    setResult(hex ? Calibration::hex(Calibration::HexPointy, size, QPointF(size / 2, size / 2)) : Calibration::square(size, QPointF(0, 0)),
+    setResult(hex ? Calibration::hex(flatButton->isChecked() ? Calibration::HexFlat : Calibration::HexPointy, size, QPointF(size / 2, size / 2))
+                  : Calibration::square(size, QPointF(0, 0)),
               false, T("typed in"));
     canvas->setFocus();   // the arrows move it now
 }
@@ -1001,6 +1055,8 @@ void Calibrator::setResult(const Calibration &c, bool fromLines, const QString &
     squaresButton->setChecked(!c.isHex());
     hexButton->setChecked(c.isHex());
     hex = c.isHex();
+    topRow->setVisible(hex);
+    if (hex) (c.grid == Calibration::HexFlat ? flatButton : pointyButton)->setChecked(true);
     unitsLabel->setText(T(hex ? "1 hex =" : "1 square ="));
     showStep();
 }
@@ -1078,14 +1134,15 @@ bool Calibrator::key(QKeyEvent *e) {
 
 void Calibrator::requestAnalysis() {
     const QString path = map->src->path;
-    if (analysisCache.contains(path) || analysisLoading.contains(path)) return;
+    if (analysisCache.contains(path)) return keepAnalysis(path);
+    if (analysisLoading.contains(path)) return;
     analysisLoading.insert(path);
     QPointer<Calibrator> self(this);
     QThreadPool::globalInstance()->start([self, path] {
         const auto a = QSharedPointer<const Analysis>::create(loadAnalysis(path));
         QMetaObject::invokeMethod(qApp, [self, path, a] {
             analysisLoading.remove(path);
-            analysisCache.insert(path, a);
+            keepAnalysis(path, a);
             if (self) self->analysisReady(path);
         }, Qt::QueuedConnection);
     });

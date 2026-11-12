@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "calibration.h"
 #include "canvas.h"
 #include "items.h"
 #include "lang.h"
@@ -306,27 +307,29 @@ void MainWindow::buildMenu() {
     };
 
     // ---- Tools ----
-    QVBoxLayout *v = menuTabs->addPage("Tools");
-    struct ToolDef { Canvas::Tool tool; const char *name, *key; };
-    static const ToolDef tools[] = {   // order matches Canvas::Tool
-        {Canvas::Select, "Select", "V"}, {Canvas::Pan, "Pan", "H"}, {Canvas::Pen, "Pen", "P"},
-        {Canvas::Eraser, "Eraser", "E"}, {Canvas::Text, "Text", "T"}, {Canvas::Note, "Note", "N"},
-        {Canvas::Measure, "Ruler", "M"}, {Canvas::Calibrate, "Calibrate", "K"}, {Canvas::ZoneRect, "Rectangle", "R"},
-        {Canvas::ZoneEllipse, "Circle", "O"}, {Canvas::ZonePoly, "Vertices", "G"}, {Canvas::Link, "New link", "J"},
-        {Canvas::Token, "Token", "B"}, {Canvas::Fog, "Fog brush", "F"}};
+    QVBoxLayout *v = menuTabs->addPage("Tools", "1");
+    struct ToolDef { Canvas::Tool tool; const char *name, *key; int grid, row, column; };
+    static const ToolDef tools[] = {   // order matches Canvas::Tool; grid 0: tools, 1: spell areas, 2: zones, 3: links
+        {Canvas::Select, "Select", "V", 0, 0, 0}, {Canvas::Pan, "Pan", "H", 0, 0, 1}, {Canvas::Pen, "Pen", "P", 0, 0, 2},
+        {Canvas::Eraser, "Eraser", "E", 0, 1, 0}, {Canvas::Text, "Text", "T", 0, 1, 1}, {Canvas::Note, "Note", "N", 0, 1, 2},
+        {Canvas::Measure, "Ruler", "M", 0, 2, 0}, {Canvas::Calibrate, "Calibrate", "K", 0, 2, 1}, {Canvas::ZoneRect, "Rectangle", "R", 2, 0, 0},
+        {Canvas::ZoneEllipse, "Circle", "O", 2, 0, 1}, {Canvas::ZonePoly, "Vertices", "G", 2, 0, 2}, {Canvas::Link, "New link", "J", 3, 0, 0},
+        {Canvas::Token, "Token", "B", 0, 2, 2}, {Canvas::Fog, "Fog brush", "F", 0, 3, 0}, {Canvas::Wall, "Wall", "W", 0, 3, 1},
+        {Canvas::Door, "Door", "D", 0, 3, 2}, {Canvas::AreaSphere, "Sphere", "A", 1, 0, 0}, {Canvas::AreaCone, "Cone", "A", 1, 0, 1},
+        {Canvas::AreaLine, "Line", "A", 1, 0, 2}};
     auto *group = new QButtonGroup(this);
-    QGridLayout *toolsGrid = newGrid(v), *zonesGrid = nullptr, *linksGrid = nullptr;
-    v->addWidget(ui::caption("Zones"));
-    zonesGrid = newGrid(v);
-    v->addWidget(ui::caption("Links between maps"));
-    linksGrid = newGrid(v);
-    for (int i = 0; i < int(std::size(tools)); ++i) {
-        const ToolDef t = tools[i];
+    QGridLayout *grids[4];
+    grids[0] = newGrid(v);
+    for (int g = 1; g < 4; ++g) {
+        v->addWidget(ui::caption(g == 1 ? "Spell areas" : g == 2 ? "Zones" : "Links between maps"));
+        grids[g] = newGrid(v);
+    }
+    QGridLayout *linksGrid = grids[3];
+    for (const ToolDef &t : tools) {
         auto *b = new MenuButton(t.name, t.key);
         b->setCheckable(true);
         group->addButton(b);
-        const int k = i < 8 ? i : i < 11 ? i - 8 : i == 11 ? 0 : i - 4;   // Token and Fog brush go after Calibrate
-        (i < 8 || i >= 12 ? toolsGrid : i < 11 ? zonesGrid : linksGrid)->addWidget(b, k / 3, k % 3);
+        grids[t.grid]->addWidget(b, t.row, t.column);
         connect(b, &QAbstractButton::clicked, this, [this, t] { menu->dismiss(); canvas->setTool(t.tool); canvas->setFocus(); });
         toolButtons << b;
     }
@@ -362,7 +365,7 @@ void MainWindow::buildMenu() {
     v->addLayout(row);
 
     // ---- Edit ----
-    QGridLayout *grid = newGrid(menuTabs->addPage("Edit"));
+    QGridLayout *grid = newGrid(menuTabs->addPage("Edit", "2"));
     grid->addWidget(menuButton(action("Undo", QKeySequence("Ctrl+Z"), [this] { undo(); })), 0, 0);
     QAction *redoAction = action("Redo", QKeySequence("Ctrl+Y"), [this] { redo(); });
     redoAction->setShortcuts({QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")});
@@ -378,13 +381,14 @@ void MainWindow::buildMenu() {
     grid->addWidget(pasteButton, 1, 1);
     grid->addWidget(menuButton(action("Duplicate", QKeySequence("Ctrl+D"), [this] { duplicate(); })), 1, 2);
     grid->addWidget(menuButton(action("Move to the active layer", QKeySequence("Ctrl+M"), [this] { moveSelectionToActiveLayer(); })), 2, 0, 1, 2);
+    grid->addWidget(menuButton(action("Commands…", QKeySequence("Ctrl+K"), [this] { showPalette(); })), 3, 0);
     auto *del = new MenuButton("Delete", "Del");
     del->ink = ui::danger;
     connect(del, &QAbstractButton::clicked, this, [this] { menu->dismiss(); canvas->deleteSelected(); });
     grid->addWidget(del, 2, 2);
 
     // ---- View ----
-    grid = newGrid(menuTabs->addPage("View"));
+    grid = newGrid(menuTabs->addPage("View", "3"));
     snapButton = new MenuButton("Snap to grid", "S");
     snapButton->setCheckable(true);
     connect(snapButton, &QAbstractButton::toggled, this, [](bool on) { snapEnabled = on; });
@@ -417,7 +421,7 @@ void MainWindow::buildMenu() {
     action("Zoom out", QKeySequence::ZoomOut, [this] { canvas->setTransformationAnchor(QGraphicsView::AnchorViewCenter); canvas->zoomBy(0.8); });
 
     // ---- Project ----
-    grid = newGrid(menuTabs->addPage("Project"));
+    grid = newGrid(menuTabs->addPage("Project", "4"));
     // two columns: with their shortcuts, three Portuguese names do not fit in a row
     grid->addWidget(menuButton(action("New", QKeySequence::New, [this] { if (maybeSave()) newProject(); })), 0, 0);
     grid->addWidget(menuButton(action("Open…", QKeySequence::Open, [this] { open(); })), 0, 1);
@@ -439,6 +443,18 @@ void MainWindow::buildMenu() {
     languageButton->literal = true;   // each language's own name
     grid->addWidget(languageButton, 5, 0);
     grid->addWidget(menuButton(action("Quit", QKeySequence("Ctrl+Q"), [this] { close(); })), 5, 1);
+    detectButton = new MenuButton("Detect grids on import");
+    detectButton->setCheckable(true);
+    detectButton->setChecked(QSettings().value("detectOnImport", true).toBool());
+    detectButton->setTip("Each map imported without a grid gets one found in its lines, in the background");
+    connect(detectButton, &QAbstractButton::toggled, this, [](bool on) { QSettings().setValue("detectOnImport", on); });
+    grid->addWidget(detectButton, 6, 0);
+    grid->addWidget(plain("Detect grids of the selection", [this] {
+                        QList<MapItem *> maps;
+                        for (QGraphicsItem *it : scene->selectedItems())
+                            if (auto *m = qgraphicsitem_cast<MapItem *>(it)) maps << m;
+                        detectGridsOf(maps, true);
+                    }), 6, 1);
     menuTabs->setCurrent(0);
 }
 
@@ -622,7 +638,7 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         opaque->setTip("On: the fog hides the map, as the players would see it. Off: it only darkens the map.");
         connect(opaque, &QAbstractButton::toggled, fogButton, &QAbstractButton::setChecked);
         v->addWidget(opaque);
-        auto *brush = new QLabel(T("The fog brush (F) reveals where it passes. Alt + drag covers again."));
+        auto *brush = new QLabel(T("The fog brush (F) reveals where it passes, Shift + click a whole room. With Alt it covers again."));
         brush->setWordWrap(true);
         brush->setStyleSheet(QString("color: %1;").arg(ui::muted.name()));
         v->addWidget(brush);
@@ -773,7 +789,15 @@ void MainWindow::openProperties(QGraphicsItem *it, QPoint at) {
         copyRow();
         v->addWidget(deleteButton(t->note ? "Delete note" : "Delete text"));
     } else if (s) {
-        title(T("Stroke"));
+        title(T(s->door ? "Door" : "Stroke"));
+        if (s->door) {
+            auto *open = new MenuButton("Open door", T("double click"));
+            open->setCheckable(true);
+            open->setChecked(s->open);
+            open->setTip("An open door lets token vision through");
+            connect(open, &QAbstractButton::clicked, this, [this, s] { canvas->toggleDoor(s); });
+            v->addWidget(open);
+        }
         colorRow(s->pen().color(), [s](const QColor &c) { QPen p = s->pen(); p.setColor(c); s->setPen(p); });
         auto *wall = new MenuButton("Wall: blocks token vision");
         wall->setCheckable(true);
@@ -926,6 +950,14 @@ bool MainWindow::eventFilter(QObject *o, QEvent *e) {
         }
         return swallow;
     }
+    if (e->type() == QEvent::KeyPress && menu->isShown()) {   // 1 to 4: the menu's tabs
+        auto *k = static_cast<QKeyEvent *>(e);
+        const int tab = k->key() - Qt::Key_1;
+        if (tab >= 0 && tab < menuTabs->count() && !(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
+            menuTabs->setCurrent(tab);
+            return true;
+        }
+    }
     if (e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
         auto *w = qobject_cast<QWidget *>(o);
         if (!w || w->window() != this) return false;   // Esc in a dialog over the popup (the colour picker) is for the dialog
@@ -1015,9 +1047,11 @@ void MainWindow::importMaps(const QStringList &files, QPointF at) {
     QPointF origin;
     double x = 0, y = 0, rowHeight = 0;
     int placed = 0;
+    QList<MapItem *> added;
     for (const QString &f : files) {
         MapItem *m = importMap(f, at);
         if (!m) continue;
+        added << m;
         if (!placed) origin = m->pos();   // the first map stays centred on the drop point
         m->setPos(origin + QPointF(x, y));
         x += m->boundingRect().width() + 100;
@@ -1028,6 +1062,21 @@ void MainWindow::importMaps(const QStringList &files, QPointF at) {
             rowHeight = 0;
         }
     }
+    if (detectButton->isChecked()) detectGridsOf(added, false);
+}
+
+void MainWindow::detectGridsOf(const QList<MapItem *> &maps, bool asked) {
+    QList<MapItem *> todo;
+    for (MapItem *m : maps)
+        if (!m->cal.valid()) todo << m;
+    if (todo.isEmpty()) {
+        if (asked) say(T("Select maps without a grid first."));
+        return;
+    }
+    say(T("Looking for the grid of %1 map(s)…").arg(todo.size()));
+    detectGrids(todo, [self = QPointer<MainWindow>(this)](int found, int total) {
+        if (self) self->say(T("Grid found on %1 of %2 map(s). The others: calibrate them with K.").arg(found).arg(total));
+    });
 }
 
 void MainWindow::openFiles(const QStringList &files, QPointF pos) {
@@ -1421,6 +1470,89 @@ void MainWindow::showFind() {
     edit->setFocus();
 }
 
+namespace {
+// Lower case without accents: "nevoa" finds "Névoa".
+QString plainText(const QString &s) {
+    QString out;
+    for (QChar c : s.normalized(QString::NormalizationForm_D))
+        if (c.category() != QChar::Mark_NonSpacing) out += c.toLower();
+    return out;
+}
+
+class KeyFilter : public QObject {
+public:
+    KeyFilter(QObject *parent, std::function<bool(int)> fn) : QObject(parent), fn(std::move(fn)) {}
+protected:
+    bool eventFilter(QObject *, QEvent *e) override { return e->type() == QEvent::KeyPress && fn(static_cast<QKeyEvent *>(e)->key()); }
+private:
+    std::function<bool(int)> fn;
+};
+} // namespace
+
+// Ctrl+K: every command of the menu, found by typing part of its name. Arrows pick, Enter runs it.
+void MainWindow::showPalette() {
+    QList<MenuButton *> all;
+    for (MenuButton *b : menu->findChildren<MenuButton *>())
+        if (!qobject_cast<Tabs *>(b->parentWidget()) && b->isEnabled()) all << b;   // not the tabs themselves
+    QVBoxLayout *v = newPopup();
+    props->setFixedWidth(420);
+    v->addWidget(heading(new QLabel(T("Commands"))));
+    auto *edit = new QLineEdit;
+    edit->setPlaceholderText(T("Type part of a command's name"));
+    v->addWidget(edit);
+    auto *results = new QVBoxLayout;
+    results->setSpacing(2);
+    v->addLayout(results);
+    auto shown = QSharedPointer<QList<QPair<MenuButton *, MenuButton *>>>::create();   // row, the menu's button
+    auto picked = QSharedPointer<int>::create(0);
+    auto run = [this, shown, picked] {
+        if (*picked < 0 || *picked >= shown->size()) return;
+        MenuButton *target = shown->at(*picked).second;
+        props->dismiss();
+        target->click();
+    };
+    auto fill = [this, all, edit, results, shown, picked, run] {
+        while (QLayoutItem *old = results->takeAt(0)) {
+            delete old->widget();
+            delete old;
+        }
+        shown->clear();
+        const QString q = plainText(edit->text().trimmed());
+        QList<MenuButton *> first, rest;   // names that start with it, then names that contain it
+        for (MenuButton *b : all) {
+            const QString name = plainText(b->shownText());
+            if (name.startsWith(q)) first << b;
+            else if (name.contains(q)) rest << b;
+        }
+        for (MenuButton *b : (first + rest).mid(0, 9)) {
+            auto *row = new MenuButton(b->shownText(), b->keyHint().trimmed());
+            row->literal = true;
+            row->setCheckable(true);
+            const int i = int(shown->size());
+            connect(row, &QAbstractButton::clicked, this, [picked, run, i] { *picked = i; run(); });
+            results->addWidget(row);
+            shown->append(qMakePair(row, b));
+        }
+        if (shown->isEmpty()) results->addWidget(new QLabel(T("Nothing found.")));
+        *picked = 0;
+        for (int i = 0; i < shown->size(); ++i) shown->at(i).first->setChecked(i == 0);
+        for (int i = 0; i < results->count(); ++i) results->itemAt(i)->widget()->show();   // unshown they are not measured
+        props->fit();
+    };
+    connect(edit, &QLineEdit::textChanged, this, fill);
+    connect(edit, &QLineEdit::returnPressed, this, run);
+    edit->installEventFilter(new KeyFilter(edit, [shown, picked](int key) {
+        if (key != Qt::Key_Down && key != Qt::Key_Up) return false;
+        if (shown->isEmpty()) return true;
+        *picked = (*picked + (key == Qt::Key_Down ? 1 : -1) + int(shown->size())) % int(shown->size());
+        for (int i = 0; i < shown->size(); ++i) shown->at(i).first->setChecked(i == *picked);
+        return true;
+    }));
+    fill();
+    props->popUp(QPoint((canvas->width() - props->width()) / 2, 40));
+    edit->setFocus();
+}
+
 bool MainWindow::exportView(const QString &f) {
     scene->clearSelection();   // no handles or dashed outlines in the picture
     // shortcut: screen resolution. Render the scene at the maps' own resolution if exports need more detail.
@@ -1606,7 +1738,7 @@ void MainWindow::restoreSession() {
     menuTabs->setCurrent(s.value("menuTab", 0).toInt());
     const int tool = s.value("tool", Canvas::Select).toInt();
     show();
-    if (tool >= Canvas::Select && tool <= Canvas::Fog && tool != Canvas::Calibrate && tool != Canvas::Link) canvas->setTool(Canvas::Tool(tool));
+    if (tool >= Canvas::Select && tool <= Canvas::AreaLine && tool != Canvas::Calibrate && tool != Canvas::Link) canvas->setTool(Canvas::Tool(tool));
     if (s.value("fullScreen").toBool()) toggleFullScreen();
     if (s.value("layers").toBool()) toggleLayers();
 }
@@ -1629,15 +1761,17 @@ void MainWindow::saveSession() {
 void MainWindow::showShortcuts() {
     static const char *const keys[][2] = {
         {"V", "Select"}, {"H", "Pan"}, {"P", "Pen"}, {"E", "Eraser"}, {"T", "Text"}, {"N", "Note"}, {"M", "Ruler"},
-        {"K", "Calibrate"}, {"B", "Token"}, {"F", "Fog brush"}, {"Alt + drag", "Cover with the fog brush"}, {"[ / ]", "Turn the selected vision cones (Shift: 45°)"}, {"R", "Rectangle"},
+        {"K", "Calibrate"}, {"B", "Token"}, {"F", "Fog brush"}, {"Alt + drag", "Cover with the fog brush"},
+        {"Shift + click", "Reveal a whole room with the fog brush (Alt: cover it)"}, {"W", "Wall"}, {"D", "Door"},
+        {"A", "Spell area: sphere, cone, line"}, {"[ / ]", "Turn the selected vision cones (Shift: 45°)"}, {"R", "Rectangle"},
         {"O", "Circle"}, {"G", "Vertices"}, {"J", "New link"}, {"Shift+J", "Show links"}, {"S", "Snap to grid"}, {"L", "Layers"},
         {"F11", "Full screen"}, {"Ctrl+0", "Fit all"}, {"Ctrl+1", "Zoom 100%"}, {"Wheel", "Zoom at the pointer"},
         {"Space + drag", "Pan (also the middle button)"}, {"Right click", "Menu, or the properties of the selected item"},
-        {"Double click", "Edit a text, add a vertex, jump through a shown link"}, {"Del", "Delete the selection"},
+        {"Double click", "Edit a text, add a vertex, jump through a shown link, open or close a door"}, {"Del", "Delete the selection"},
         {"Arrows", "Move the selection 1 px (Shift: 10 px)"}, {"Esc", "Cancel, clear the rulers"}, {"Ctrl+Z / Ctrl+Y", "Undo / Redo"},
         {"Ctrl+C / Ctrl+V", "Copy / Paste"}, {"Ctrl+D", "Duplicate"}, {"Ctrl+M", "Move to the active layer"}, {"Ctrl+F", "Find…"},
         {"Ctrl+N / Ctrl+O", "New / Open…"}, {"Ctrl+S", "Save"}, {"Ctrl+I", "Import maps…"}, {"Ctrl+E", "Export view…"},
-        {"Ctrl+Q", "Quit"}};
+        {"Ctrl+Q", "Quit"}, {"Ctrl+K", "Commands…"}, {"1 - 4", "Tabs of the open menu"}};
     QVBoxLayout *v = newPopup();
     props->setFixedWidth(720);
     v->addWidget(heading(new QLabel(T("Shortcuts"))));
@@ -1647,7 +1781,7 @@ void MainWindow::showShortcuts() {
     const int rows = (int(std::size(keys)) + 1) / 2;
     for (int i = 0; i < int(std::size(keys)); ++i) {
         const QString k = keys[i][0];
-        static const QStringList words{"Alt + drag", "Wheel", "Space + drag", "Right click", "Double click", "Arrows"};
+        static const QStringList words{"Alt + drag", "Wheel", "Space + drag", "Right click", "Double click", "Arrows", "Shift + click"};
         auto *key = new QLabel(words.contains(k) ? T(keys[i][0]) : k);   // key names stay as on the keyboard
         key->setStyleSheet(QString("color: %1;").arg(ui::muted.name()));
         auto *what = new QLabel(T(keys[i][1]));

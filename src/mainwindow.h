@@ -35,6 +35,7 @@ public:
     bool openFromUi(const QString &file);                // openProject, then asks for the images it did not find
     void openFiles(const QStringList &files, QPointF scenePos);   // dropped or on the command line: a project/package, or maps
     void openFiles(const QStringList &files);                     // maps go to the centre of the view
+    void detectGridsOf(const QList<MapItem *> &maps, bool asked);  // in the background; `asked`: says so when none needs it
     bool saveTo(const QString &file);
     void fitAll();
     void moveSelectionToActiveLayer();
@@ -55,6 +56,7 @@ public:
     void restoreSession();                              // window, tool, colour, panels as at the last close; shows the window
     void saveSession();
     void showShortcuts();
+    void showPalette();   // Ctrl+K
     QList<QGraphicsItem *> findNamed(const QString &text) const;   // zones and links whose name contains it
     void goTo(QGraphicsItem *item);
     int locateImage(MapItem *map, const QString &path); // also the other missing images found in that folder; returns how many
@@ -115,7 +117,7 @@ private:
     QTreeWidget *layerList = nullptr;
     bool refreshing = false, wasMaximized = false, ownsRecovery = false;
     QList<MenuButton *> toolButtons;
-    MenuButton *snapButton, *layersButton, *fullButton, *linksButton, *languageButton, *fogButton, *minimapButton;
+    MenuButton *snapButton, *layersButton, *fullButton, *linksButton, *languageButton, *fogButton, *minimapButton, *detectButton;
     QWidget *minimap;
     SwatchRow *menuSwatches;
     QSlider *widthSlider;

@@ -6,6 +6,7 @@
 #include <QVector>
 
 class QPainter;
+class QPolygonF;
 class QRectF;
 class QColor;
 
@@ -41,8 +42,16 @@ struct Calibration {
     QPointF cellCentre(QPoint c) const;
     QPointF nearestCorner(QPointF p) const;   // square corner or hex vertex
     double steps(QPoint from, QPoint to) const;   // in cells: squares by the diagonal rule, hexes by hex distance
+    QPolygonF cellPolygon(QPoint c) const;        // the square or hex outline
     QString noun(int count) const;
 };
 
 // Grid lines inside `exposed` (image px); skipped when cells are too small on screen.
 void drawGrid(QPainter *p, const Calibration &c, const QRectF &exposed, double screenScale, const QColor &color);
+
+// Spell areas. Sphere and cone start at `origin`, a square's corner or a hex's centre; a line starts at the centre of
+// a cell, which it leaves out, and is one cell wide. They reach `*length` cells counted by the map's diagonal rule
+// (hex distance on hexes); a cone opens as wide as it is long. `toward` (image px) gives the direction and, when
+// *length is 0, the length: the cell under it is the last one in. Returns the cells hit.
+enum class AreaShape { Sphere, Cone, Line };
+QVector<QPoint> areaCells(const Calibration &c, AreaShape shape, QPointF origin, QPointF toward, int *length);

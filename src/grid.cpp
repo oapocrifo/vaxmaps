@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QLineF>
 #include <QPainter>
+#include <QPolygonF>
 #include <QRectF>
 #include <cmath>
 
@@ -117,6 +118,54 @@ double Calibration::steps(QPoint from, QPoint to) const {
     case One: break;
     }
     return std::max(du, dv);
+}
+
+QPolygonF Calibration::cellPolygon(QPoint c) const {
+    QPolygonF poly;
+    if (isHex())
+        for (const QPointF &v : hexVertex) poly << fromGrid(QPointF(c) + v);
+    else
+        for (QPointF d : {QPointF(0, 0), QPointF(1, 0), QPointF(1, 1), QPointF(0, 1)}) poly << fromGrid(QPointF(c) + d);
+    return poly;
+}
+
+QVector<QPoint> areaCells(const Calibration &c, AreaShape shape, QPointF origin, QPointF toward, int *length) {
+    QVector<QPoint> cells;
+    if (!c.valid()) return cells;
+    const bool fromCorner = !c.isHex() && shape != AreaShape::Line;
+    const QPointF g = c.toGrid(origin);
+    const QPoint corner(int(std::lround(g.x())), int(std::lround(g.y()))), start = c.cellAt(origin);
+    // Distance of a cell from the origin in cells, by the map's rule. From a corner the cell itself counts 1.
+    auto dist = [&](QPoint q) {
+        if (!fromCorner) return c.steps(start, q);
+        const int dx = q.x() >= corner.x() ? q.x() - corner.x() : corner.x() - 1 - q.x();
+        const int dy = q.y() >= corner.y() ? q.y() - corner.y() : corner.y() - 1 - q.y();
+        switch (c.diagonal) {
+        case Calibration::Straight: return std::hypot(dx + 0.5, dy + 0.5);
+        case Calibration::Alternating: return double(std::max(dx, dy) + std::min(dx, dy) / 2 + 1);
+        case Calibration::One: break;
+        }
+        return double(std::max(dx, dy) + 1);
+    };
+    if (*length <= 0) *length = std::max(1, int(std::ceil(dist(c.cellAt(toward)) - 1e-9)));
+    const int L = *length;
+    const QPointF from = fromCorner ? c.fromGrid(QPointF(corner)) : c.cellCentre(start);
+    QPointF dir = toward - from;
+    if (QLineF(QPointF(), dir).length() < 1e-9) dir = QPointF(1, 0);
+    dir /= QLineF(QPointF(), dir).length();
+    const QPoint mid = fromCorner ? corner : start;
+    for (int i = mid.x() - L - 2; i <= mid.x() + L + 2; ++i)
+        for (int j = mid.y() - L - 2; j <= mid.y() + L + 2; ++j) {
+            const QPoint q(i, j);
+            const double d = dist(q);
+            if (d > L + 1e-9) continue;
+            const QPointF v = c.cellCentre(q) - from;
+            const double along = QPointF::dotProduct(v, dir), across = std::abs(v.x() * dir.y() - v.y() * dir.x());
+            if (shape == AreaShape::Cone && (d < 0.5 || across > along * 0.5 + 1e-6)) continue;   // tan of the half angle: 0.5
+            if (shape == AreaShape::Line && (d < 0.5 || along <= 0 || across >= c.cellSize() / 2)) continue;
+            cells << q;
+        }
+    return cells;
 }
 
 QString Calibration::noun(int count) const {

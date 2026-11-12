@@ -347,8 +347,8 @@ Tabs::Tabs(QWidget *parent) : QWidget(parent) {
     column->addWidget(rule);
 }
 
-QVBoxLayout *Tabs::addPage(const QString &english) {
-    auto *b = new MenuButton(english);
+QVBoxLayout *Tabs::addPage(const QString &english, const QString &key) {
+    auto *b = new MenuButton(english, key);
     b->setCheckable(true);
     b->tint = QColor(88, 91, 104);   // a quiet pill: the tools keep the accent colour
     const int i = int(buttons.size());

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Cross-compiles VaxMaps.exe on Ubuntu 24.04: static Qt 6.8 LTS (qtbase + qtimageformats) with MinGW-w64.
-# apt install g++ g++-mingw-w64-x86-64-posix nsis cmake ninja-build zip
+# apt install g++ g++-mingw-w64-x86-64-posix nsis cmake ninja-build zip osslsigncode
+# Signed when SIGN_PFX, SIGN_PKCS11_MODULE or SIGN_CMD is set (see sign.sh); unsigned otherwise.
 # Qt 6.4 bundled libwebp 1.2.4 (CVE-2023-4863) and libtiff 4.4.0: keep QTV on a maintained release.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd); W=${W:-$PWD/winbuild}; QT=$W/qt-win; HOST=$W/qt-host
@@ -35,8 +36,10 @@ ninja -C qtimg-build install
 $QTCMAKE -S "$HERE/.." -B vaxmaps-build
 ninja -C vaxmaps-build
 x86_64-w64-mingw32-strip vaxmaps-build/VaxMaps.exe
+SIGNING=$SIGN_PFX$SIGN_PKCS11_MODULE$SIGN_CMD
+if [ -n "$SIGNING" ]; then sh "$HERE/sign.sh" vaxmaps-build/VaxMaps.exe; fi
 VERSION=$(sed -n 's/^project(VaxMaps VERSION \([0-9.]*\).*/\1/p' "$HERE/../CMakeLists.txt")
-makensis -V2 -DVERSION="$VERSION" -DEXE="$W/vaxmaps-build/VaxMaps.exe" -DREADME="$HERE/../README.md" \
+makensis -V2 ${SIGNING:+-DSIGN=1} -DSIGNER="$HERE/sign.sh" -DVERSION="$VERSION" -DEXE="$W/vaxmaps-build/VaxMaps.exe" -DREADME="$HERE/../README.md" \
  -DOUTFILE="$W/VaxMaps-$VERSION-setup.exe" "$HERE/installer.nsi"
 # portable copy: the program beside an empty VaxMaps-data folder, which keeps settings and cache there
 rm -rf "$W/portable" && mkdir -p "$W/portable/VaxMaps-$VERSION-portable/VaxMaps-data"

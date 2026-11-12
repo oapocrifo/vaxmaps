@@ -84,6 +84,8 @@ QJsonObject itemToJson(QGraphicsItem *it, const QDir &base, bool strokePoints = 
         o["color"] = s->pen().color().name(QColor::HexArgb);
         o["width"] = s->pen().widthF();
         if (s->wall) o["wall"] = true;
+        if (s->door) o["door"] = true;
+        if (s->open) o["open"] = true;
         if (strokePoints) o["pts"] = pointsToJson(s->pts);
     } else if (auto *k = qgraphicsitem_cast<TokenItem *>(it)) {
         o["type"] = "token";
@@ -141,6 +143,8 @@ QGraphicsItem *itemFromJson(const QJsonObject &o, const QDir &base, int version)
         auto *s = new StrokeItem(QColor(o["color"].toString()), o["width"].toDouble(4));
         s->setPoints(pointsFromJson(o["pts"].toArray()));
         s->wall = o["wall"].toBool();
+        s->door = o["door"].toBool();
+        s->open = o["open"].toBool();
         it = s;
     } else if (type == "token") {
         const double d = o["d"].toDouble();

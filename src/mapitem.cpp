@@ -355,6 +355,15 @@ void MapItem::clearFog(const QPainterPath &area) {
     update();
 }
 
+void MapItem::fogMask(const QImage &mask, bool cover) {
+    if (fog.isNull() || mask.isNull()) return;
+    QPainter p(&fog);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    p.setCompositionMode(cover ? QPainter::CompositionMode_SourceOver : QPainter::CompositionMode_DestinationOut);
+    p.drawImage(QRectF(fog.rect()), mask);
+    update();
+}
+
 void MapItem::fogStrokeDone() {
     fogPng.clear();
     if (fog.isNull()) return;

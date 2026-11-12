@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9
+
+Projects from 0.8 open unchanged. Doors saved by 0.9 open in 0.8 as walls.
+
+- **Grids detected on import**: each map imported without a grid gets one found in its lines, in the background, one map after the other (reading one takes about 90 MB for a moment). The toast says on how many. Menu, Project tab: **Detect grids on import** (on by default) and **Detect grids of the selection** for maps already on the canvas.
+- Detection is stricter with faint lines: below twice the minimum strength it needs at least 14 lines across the map. On 40 maps without a grid (walls on textured floor) 0.7 found a grid on 22, 0.8 on 4, 0.9 on none. The 24 maps with a grid on part of them give the same results as in 0.8.
+- **Loupe** while marking corners or hex centres: hold the button and the map shows 4 times closer beside the pointer. The point is taken where the button is released.
+- Hexes typed in: **Top: Pointy / Flat**. 0.8 made them pointy-top only.
+- The calibration panel keeps the lines of the last 3 maps it read (about 24 MB each). Before, every map calibrated in a session stayed in memory until the program closed.
+- **Spell areas** (A: sphere, then cone, then line): drag from the origin to the last square reached. The squares hit are filled and counted with the map's diagonal rule: a sphere of 2 squares is 16 squares with the rule 1, 12 with the straight line, and of 3 squares 32 with 1-2-1. On hexes, hex distance. Esc clears them with the rulers.
+- **Walls** (W): click corner after corner, they snap to the calibrated map's corners. **Doors** (D): drag from corner to corner. A double click opens or closes a door; an open door lets token vision through and the tokens look again. Saved with the project.
+- **Fog by room**: with the fog brush, Shift + click reveals the whole room under the pointer, Shift + Alt + click covers it. The room is found in the map's picture: floor of the colour clicked, cut at its walls, at walls and closed doors drawn over the map, and at openings about a square wide. On the test dungeon (two rooms of 8 x 8 squares joined by a corridor, faint grid, stone texture) it reveals 64 of 64 squares of the room and none of the other, in 68 ms on a map of 1500 x 1000 px and 265 ms on one of 3000 x 2000 px.
+- **Commands** (Ctrl+K): type part of a command's name, in either language and without accents; arrows pick, Enter runs it.
+- Keys **1 to 4** switch the tabs of the open menu; the tabs show their number.
+- Fixed: erasing across a wall left its pieces as ordinary strokes, so the vision went through them.
+- **Code signing** in the build: `tools/build-windows.sh` signs `VaxMaps.exe`, the installer and the uninstaller when a certificate is given (a PKCS#12 file, a token through PKCS#11, or any signing command). See Code signing in the README. The 0.9 release files are unsigned.
+
 ## 0.8
 
 Projects from 0.7 open unchanged.

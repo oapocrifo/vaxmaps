@@ -54,6 +54,7 @@ public:
     void setFog(const QImage &mask);                       // loaded from a project or an undo step
     void paintFog(QPointF a, QPointF b, double width, bool cover);   // item coordinates
     void clearFog(const QPainterPath &area);                // item coordinates
+    void fogMask(const QImage &mask, bool cover);           // mask (alpha) stretched over the whole map
     void fogStrokeDone();
     std::optional<Calibration> preview;   // grid being calibrated, drawn in yellow until applied
 

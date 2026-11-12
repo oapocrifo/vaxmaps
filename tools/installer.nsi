@@ -13,6 +13,11 @@ OutFile "${OUTFILE}"
 InstallDir "$LOCALAPPDATA\Programs\Vax Maps"
 InstallDirRegKey HKCU "${KEY}" "InstallLocation"
 
+!ifdef SIGN   ; the installer and the uninstaller inside it, signed as they are written (NSIS 3.08+)
+  !finalize 'sh "${SIGNER}" "%1"'
+  !uninstfinalize 'sh "${SIGNER}" "%1"'
+!endif
+
 !include "MUI2.nsh"
 !define MUI_ICON "${__FILEDIR__}/../icon/vaxmaps.ico"
 !define MUI_UNICON "${__FILEDIR__}/../icon/vaxmaps.ico"

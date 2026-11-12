@@ -151,6 +151,37 @@ QImage partialGridImage(int w, int h, double cell, QPointF origin, const QPainte
     return img;
 }
 
+// A dungeon on black, in cells of `cell` px: rooms A (cells 2-9 x 2-9) and B (13-20 x 3-10) joined by a corridor one
+// cell wide (row 5), walls a fifth of a cell thick with doorways into the corridor, a faint grid on the floor.
+QImage dungeonImage(int w, int h, int cell) {
+    QImage img(w, h, QImage::Format_RGB32);
+    img.fill(QColor(18, 18, 20));
+    QPainterPath floor;
+    for (QRect r : {QRect(2, 2, 8, 8), QRect(13, 3, 8, 8), QRect(10, 5, 3, 1)}) floor.addRect(r.x() * cell, r.y() * cell, r.width() * cell, r.height() * cell);
+    QPainter p(&img);
+    p.fillPath(floor, QColor(178, 166, 146));
+    p.setClipPath(floor);
+    p.setPen(QPen(QColor(120, 110, 96), 1));
+    for (int x = 0; x < w; x += cell) p.drawLine(x, 0, x, h);
+    for (int y = 0; y < h; y += cell) p.drawLine(0, y, w, y);
+    p.setClipping(false);
+    p.setPen(QPen(QColor(45, 38, 32), cell * 0.2, Qt::SolidLine, Qt::SquareCap));
+    const int walls[][4] = {{2, 2, 10, 2}, {2, 2, 2, 10}, {2, 10, 10, 10}, {10, 2, 10, 5}, {10, 6, 10, 10},      // A, doorway at row 5
+                            {10, 5, 13, 5}, {10, 6, 13, 6},                                                      // corridor
+                            {13, 3, 21, 3}, {21, 3, 21, 11}, {13, 11, 21, 11}, {13, 3, 13, 5}, {13, 6, 13, 11}};  // B
+    for (const auto &l : walls) p.drawLine(l[0] * cell, l[1] * cell, l[2] * cell, l[3] * cell);
+    p.end();
+    for (int y = 0; y < h; ++y) {   // stone: noise on the floor
+        auto *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        for (int x = 0; x < w; ++x)
+            if (qRed(line[x]) > 100) {
+                const int n = int(rnd() % 25) - 12;
+                line[x] = qRgb(qBound(0, qRed(line[x]) + n, 255), qBound(0, qGreen(line[x]) + n, 255), qBound(0, qBlue(line[x]) + n, 255));
+            }
+    }
+    return img;
+}
+
 // Square grid with lines at the given positions; horizontal lines tilt by `slope` (y grows with x).
 QImage linesImage(int w, int h, const QVector<double> &xs, const QVector<double> &ys, double slope) {
     QImage img = gridImage(w, h, 1, {}, 0, 25);
@@ -1323,6 +1354,199 @@ void version08(MainWindow &w, const QString &dir, const QString &out) {
     w.dirty = false;
 }
 
+// What 0.9 added.
+void version09(MainWindow &w, const QString &dir, const QString &map1, const QString &out) {
+    say("\n== 0.9 ==");
+    Canvas *c = w.canvas;
+    w.newProject();
+    c->activeLayer = w.layers[0];
+    auto mapsNow = [&] {
+        QList<MapItem *> r;
+        for (QGraphicsItem *it : w.layers[0]->childItems())
+            if (auto *m = qgraphicsitem_cast<MapItem *>(it)) r << m;
+        return r;
+    };
+
+    // grids found on import, one map after the other
+    const QString plain = dir + "/plain.png", a = dir + "/gridA.png", b = dir + "/gridB.png";
+    gridImage(2000, 1500, 1, {}, 0, 30).save(plain);
+    gridImage(2400, 1600, 70.37, QPointF(23.4, 41.9), 200, 25).save(a);
+    partialGridImage(3000, 2000, 88.6, QPointF(40.2, 12.7), [] { QPainterPath p; p.addRect(0, 0, 1500, 2000); return p; }(), true).save(b);
+    w.importMaps({plain, a, b}, QPointF(0, 0));
+    QList<MapItem *> imported = mapsNow();
+    auto calibrated = [&] { int n = 0; for (MapItem *m : imported) n += m->cal.valid(); return n; };
+    waitFor([&] { return calibrated() == 2; }, 90000);
+    pause(500);
+    QStringList cells;
+    for (MapItem *m : imported) cells << (m->cal.valid() ? QString::number(m->cal.cellSize(), 'f', 2) : "-");
+    check(imported.size() == 3 && !imported[0]->cal.valid() && std::abs(imported[1]->cal.cellSize() - 70.37) < 0.3 && std::abs(imported[2]->cal.cellSize() - 88.6) < 0.35,
+          "importing 3 maps finds the grid of the 2 that have one: " + cells.join(" "));
+
+    // magnifier, and the point taken where the button is released
+    MapItem *m = w.importMap(map1, QPointF(-1500, 5000));   // top-left at -3000,4000, squares of 100 px from 50,50
+    waitFor([&] { return m->src->ready; }, 60000);
+    w.scene->clearSelection();
+    m->setSelected(true);
+    c->setTool(Canvas::Calibrate);
+    Calibrator *cal = c->calibrator;
+    waitFor([&] { return !cal->busy(); }, 30000);
+    mouse(c, QEvent::MouseButtonPress, m->mapToScene(QPointF(170, 130)));
+    const bool shownWhilePressed = c->loupeShown();
+    mouse(c, QEvent::MouseMove, m->mapToScene(QPointF(152, 151)), Qt::LeftButton);
+    w.grab().save(out + "/vaxmaps-loupe.png");
+    mouse(c, QEvent::MouseButtonRelease, m->mapToScene(QPointF(152, 151)));
+    click(c, m->mapToScene(QPointF(249, 150)));
+    waitFor([&] { return !cal->busy(); }, 30000);
+    auto r = cal->current();
+    check(shownWhilePressed && !c->loupeShown() && cal->measured() == 1 && r && std::abs(r->cellSize() - 100) < 0.1,
+          QString("the loupe shows while the button is held, the corner is taken where it is released (%1 px)").arg(r ? r->cellSize() : 0, 0, 'f', 2));
+
+    // hexes typed in: pointy or flat
+    cal->setHex(true);
+    if (auto *flat = findIn<MenuButton>(cal, "Flat")) flat->click();
+    cal->useCell(80);
+    r = cal->current();
+    check(r && r->grid == Calibration::HexFlat && std::abs(r->cellSize() - 80) < 1e-9, "a typed hex size can be flat-top");
+    key(c, Qt::Key_Escape);
+    check(cachedAnalyses() >= 1 && cachedAnalyses() <= 3, QString("the lines of at most 3 maps stay in memory (%1)").arg(cachedAnalyses()));
+
+    // spell areas on the 100 px squares: drag from a corner to the last square
+    m->cal = Calibration::square(100, QPointF(50, 50));
+    c->resetTransform();
+    c->centerOn(m->mapToScene(QPointF(400, 400)));
+    key(c, Qt::Key_A, "a");
+    check(c->tool() == Canvas::AreaSphere, "A picks the sphere");
+    drag(c, m->mapToScene(QPointF(253, 247)), m->mapToScene(QPointF(395, 390)), 6);
+    check(c->areaCount() == 1 && c->areaText(0) == "Sphere 2 squares · 3 m: 16 squares", "sphere: " + c->areaText(0));
+    key(c, Qt::Key_A, "a");
+    key(c, Qt::Key_A, "a");
+    drag(c, m->mapToScene(QPointF(240, 240)), m->mapToScene(QPointF(640, 250)), 6);
+    check(c->tool() == Canvas::AreaLine && c->areaCount() == 2 && c->areaText(1) == "Line 4 squares · 6 m: 4 squares", "line: " + c->areaText(1));
+    pause(200);
+    w.grab().save(out + "/vaxmaps-areas.png");
+    key(c, Qt::Key_Escape);
+    check(c->areaCount() == 0, "Esc clears the areas with the rulers");
+
+    // walls on the corners, doors that open
+    c->activeLayer = w.layers[2];
+    key(c, Qt::Key_W, "w");
+    click(c, m->mapToScene(QPointF(148, 153)));
+    click(c, m->mapToScene(QPointF(455, 147)));
+    mouse(c, QEvent::MouseMove, m->mapToScene(QPointF(452, 446)), Qt::NoButton);
+    click(c, m->mapToScene(QPointF(452, 446)));
+    mouse(c, QEvent::MouseButtonDblClick, m->mapToScene(QPointF(452, 446)));
+    mouse(c, QEvent::MouseButtonRelease, m->mapToScene(QPointF(452, 446)));
+    QList<StrokeItem *> strokes;
+    for (QGraphicsItem *it : w.layers[2]->childItems())
+        if (auto *st = qgraphicsitem_cast<StrokeItem *>(it)) strokes << st;
+    check(strokes.size() == 1 && strokes[0]->wall && !strokes[0]->door
+              && strokes[0]->pts == QVector<QPointF>({m->mapToScene(QPointF(150, 150)), m->mapToScene(QPointF(450, 150)), m->mapToScene(QPointF(450, 450))}),
+          QString("a wall clicked corner by corner: %1 points on the corners").arg(strokes.isEmpty() ? 0 : strokes[0]->pts.size()));
+    key(c, Qt::Key_D, "d");
+    drag(c, m->mapToScene(QPointF(147, 452)), m->mapToScene(QPointF(253, 449)), 5);
+    StrokeItem *door = nullptr;
+    for (QGraphicsItem *it : w.layers[2]->childItems())
+        if (auto *st = qgraphicsitem_cast<StrokeItem *>(it); st && st->door) door = st;
+    const QPointF eye = m->mapToScene(QPointF(200, 520));   // only the door is within its reach
+    const bool closedBlocks = door && !visibleFrom(w.scene, eye, 80).isEmpty();
+    c->setTool(Canvas::Select);
+    if (door) {
+        mouse(c, QEvent::MouseMove, m->mapToScene(QPointF(200, 450)), Qt::NoButton);
+        click(c, m->mapToScene(QPointF(200, 450)));
+        mouse(c, QEvent::MouseButtonDblClick, m->mapToScene(QPointF(200, 450)));
+        mouse(c, QEvent::MouseButtonRelease, m->mapToScene(QPointF(200, 450)));
+    }
+    check(door && door->wall && door->pts == QVector<QPointF>({m->mapToScene(QPointF(150, 450)), m->mapToScene(QPointF(250, 450))}) && closedBlocks
+              && door->open && visibleFrom(w.scene, eye, 80).isEmpty(),
+          "a door dragged corner to corner blocks vision; a double click opens it and vision passes");
+    const QString proj = dir + "/doors.vaxmap";
+    w.saveTo(proj);
+    w.openProject(proj);
+    int walls = 0, openDoors = 0;
+    for (QGraphicsItem *it : w.layers[2]->childItems())
+        if (auto *st = qgraphicsitem_cast<StrokeItem *>(it)) { walls += st->wall; openDoors += st->door && st->open; }
+    check(walls == 2 && openDoors == 1, "walls and an open door are saved with the project");
+
+    // fog by room: Shift + click reveals the room, not the one past the corridor
+    for (auto [cell, size] : {std::pair{50, QSize(1500, 1000)}, std::pair{30, QSize(3000, 2000)}}) {   // the overview, then the file read again
+        const QString path = dir + QString("/dungeon%1.png").arg(cell);
+        dungeonImage(size.width(), size.height(), cell).save(path);
+        w.newProject();
+        c->activeLayer = w.layers[0];
+        MapItem *d = w.importMap(path, QPointF(size.width() / 2.0, size.height() / 2.0));
+        waitFor([&] { return d->src->ready; }, 60000);
+        d->cal = Calibration::square(cell, QPointF(0, 0));
+        d->enableFog(true);
+        auto fogAt = [&](QPointF p) {
+            return qAlpha(d->fog.pixel(int(p.x() * d->fog.width() / d->boundingRect().width()), int(p.y() * d->fog.height() / d->boundingRect().height())));
+        };
+        auto clearIn = [&](QRect cells) {
+            int n = 0;
+            for (int i = cells.left(); i <= cells.right(); ++i)
+                for (int j = cells.top(); j <= cells.bottom(); ++j) n += fogAt(QPointF((i + 0.5) * cell, (j + 0.5) * cell)) == 0;
+            return n;
+        };
+        c->setTool(Canvas::Fog);
+        c->resetTransform();
+        c->centerOn(d->mapToScene(QPointF(6 * cell, 6 * cell)));
+        QElapsedTimer t;
+        t.start();
+        mouse(c, QEvent::MouseButtonPress, d->mapToScene(QPointF(4.3 * cell, 7.6 * cell)), Qt::LeftButton, Qt::ShiftModifier);
+        mouse(c, QEvent::MouseButtonRelease, d->mapToScene(QPointF(4.3 * cell, 7.6 * cell)), Qt::LeftButton, Qt::ShiftModifier);
+        const qint64 ms = t.elapsed();
+        const int roomA = clearIn(QRect(2, 2, 8, 8)), roomB = clearIn(QRect(13, 3, 8, 8)), outside = clearIn(QRect(22, 12, 6, 6));
+        check(roomA >= 62 && roomB == 0 && outside == 0,
+              QString("Shift + click reveals the room (cells %1 px): %2 of its 64 squares clear, %3 of the next room's, %4 outside, %5 ms")
+                  .arg(cell).arg(roomA).arg(roomB).arg(outside).arg(ms));
+        if (cell == 50) {
+            pause(200);
+            w.grab().save(out + "/vaxmaps-room-fog.png");
+        }
+        mouse(c, QEvent::MouseButtonPress, d->mapToScene(QPointF(4.3 * cell, 7.6 * cell)), Qt::LeftButton, Qt::ShiftModifier | Qt::AltModifier);
+        mouse(c, QEvent::MouseButtonRelease, d->mapToScene(QPointF(4.3 * cell, 7.6 * cell)), Qt::LeftButton, Qt::ShiftModifier | Qt::AltModifier);
+        check(clearIn(QRect(2, 2, 8, 8)) == 0, "Shift + Alt + click covers the room again");
+    }
+    c->setTool(Canvas::Select);
+
+    // command palette and the menu's number keys
+    w.showPalette();
+    auto *edit = w.props->findChild<QLineEdit *>();
+    if (edit) {
+        edit->setText("fog");
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+        QApplication::sendEvent(edit, &down);
+        QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        const bool was = fogOpaque;
+        QApplication::sendEvent(edit, &enter);
+        check(fogOpaque != was && !w.props->isShown(), "Ctrl+K: typing \"fog\", the arrow down and Enter run the second command found (Opaque fog)");
+        fogOpaque = was;
+    } else check(false, "the command palette has a text field");
+    w.setLanguage(true);
+    w.showPalette();
+    if ((edit = w.props->findChild<QLineEdit *>())) {
+        edit->setText("pincel de nevoa");   // without the accent
+        QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        QApplication::sendEvent(edit, &enter);
+    }
+    check(c->tool() == Canvas::Fog, "the palette finds commands in Portuguese without accents");
+    c->setTool(Canvas::Select);
+    w.openMenu(QPoint(60, 40));
+    key(c, Qt::Key_3, "3");
+    const int third = w.menuTabs->current();
+    key(c, Qt::Key_1, "1");
+    pause(250);
+    w.grab().save(out + "/vaxmaps-menu-0.9-pt.png");
+    check(third == 2 && w.menuTabs->current() == 0, "keys 1 to 4 switch the tabs of the open menu");
+    key(c, Qt::Key_Escape);
+    for (int tool = Canvas::Wall; tool <= Canvas::AreaLine; ++tool) c->setTool(Canvas::Tool(tool));   // every new hint
+    c->setTool(Canvas::Select);
+    w.showShortcuts();
+    w.grab();
+    key(c, Qt::Key_Escape);
+    w.setLanguage(false);
+    w.dirty = false;
+}
+
 } // namespace
 
 int runSelfTest(const QStringList &args) {
@@ -1366,6 +1590,36 @@ int runSelfTest(const QStringList &args) {
         const QPointF p = warped.fromGrid(QPointF(5.5, 2));
         check(QLineF(warped.toGrid(p), QPointF(5.5, 2)).length() < 1e-3 && std::abs(p.x() - (50 + 550 + 6.05)) < 0.1,
               "local corrections: fromGrid and toGrid invert each other");
+    }
+    {   // spell areas, counted by the diagonal rule
+        Calibration sq = Calibration::square(100, QPointF(0, 0));
+        int len = 0;
+        const int sphere = int(areaCells(sq, AreaShape::Sphere, QPointF(200, 200), QPointF(350, 350), &len).size());
+        check(len == 2 && sphere == 16, QString("sphere of 2 squares from a corner, diagonal 1: %1 squares, length %2 (4 x 4 expected)").arg(sphere).arg(len));
+        sq.diagonal = Calibration::Alternating;
+        len = 3;
+        const int alternating = int(areaCells(sq, AreaShape::Sphere, QPointF(200, 200), QPointF(300, 300), &len).size());
+        sq.diagonal = Calibration::Straight;
+        len = 2;
+        const int straight = int(areaCells(sq, AreaShape::Sphere, QPointF(200, 200), QPointF(300, 300), &len).size());
+        check(alternating == 32 && straight == 12, QString("sphere by the 1-2-1 rule (3 squares): %1, straight line (2): %2 (32 and 12)").arg(alternating).arg(straight));
+        sq.diagonal = Calibration::One;
+        len = 3;
+        const QVector<QPoint> cone = areaCells(sq, AreaShape::Cone, QPointF(200, 200), QPointF(600, 200), &len);
+        len = 3;
+        const QVector<QPoint> diagonalCone = areaCells(sq, AreaShape::Cone, QPointF(200, 200), QPointF(600, 600), &len);
+        check(cone.size() == 4 && cone.contains(QPoint(3, 1)) && cone.contains(QPoint(4, 2)) && !cone.contains(QPoint(2, 2)) && diagonalCone.contains(QPoint(4, 4))
+                  && !diagonalCone.contains(QPoint(5, 5)),
+              QString("cone of 3 squares: %1 squares along the grid, reaches 3 squares along the diagonal").arg(cone.size()));
+        len = 4;
+        const QVector<QPoint> line = areaCells(sq, AreaShape::Line, QPointF(250, 250), QPointF(750, 260), &len);
+        len = 0;
+        const QVector<QPoint> diagonal = areaCells(sq, AreaShape::Line, QPointF(250, 250), QPointF(650, 650), &len);
+        check(line == QVector<QPoint>({{3, 2}, {4, 2}, {5, 2}, {6, 2}}) && len == 4 && diagonal.size() == 4 && diagonal.contains(QPoint(6, 6)),
+              QString("line: 4 squares along a row, 4 along the diagonal (%1)").arg(diagonal.size()));
+        const Calibration hx = Calibration::hex(Calibration::HexPointy, 80, QPointF(400, 400));
+        len = 2;
+        check(areaCells(hx, AreaShape::Sphere, QPointF(400, 400), QPointF(560, 400), &len).size() == 19, "hex sphere of 2: 1 + 6 + 12 hexes");
     }
     {   // measurements
         const Calibration one = gridFromMeasurements({{QPointF(148, 152), QPointF(249, 152)}}, false);
@@ -1838,6 +2092,7 @@ int runSelfTest(const QStringList &args) {
     version062(w, tmp.path(), map2);
     version07(w, tmp.path(), map1);
     version08(w, tmp.path(), out);
+    version09(w, tmp.path(), map1, out);
     if (args.contains("--bench")) bench(w, tmp.path());
     w.dirty = false;
     say(failures ? QString("\n%1 failure(s)").arg(failures) : "\nAll tests passed.");

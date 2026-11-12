@@ -32,8 +32,12 @@ public:
     int type() const override { return Type; }
     void setPoints(const QVector<QPointF> &p);
     void addPoint(QPointF p);
+    void paint(QPainter *p, const QStyleOptionGraphicsItem *o, QWidget *w) override;
     QVector<QPointF> pts;   // item coordinates
     bool wall = false;      // blocks token vision
+    bool door = false;      // a wall that opens: drawn as a door, blocks vision only while closed
+    bool open = false;
+    bool blocksSight() const { return wall && !(door && open); }
     // Undo steps: the stroke as JSON text, and what it was made from. Each part is used only while that still matches.
     QVector<QPointF> jsonPts;
     QByteArray jsonPart;   // the points

@@ -50,6 +50,28 @@ void StrokeItem::setPoints(const QVector<QPointF> &p) {
     setPath(path);
 }
 
+void StrokeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *o, QWidget *w) {
+    if (!door) return QGraphicsPathItem::paint(p, o, w);
+    // A door: a bar with a light core while closed, a thin dashed line while open.
+    QPen bar = pen();
+    if (open) {
+        bar.setStyle(Qt::DashLine);
+        bar.setWidthF(bar.widthF() / 2);
+    }
+    p->setPen(bar);
+    p->drawPath(path());
+    if (!open) {
+        p->setPen(QPen(QColor(245, 235, 210), bar.widthF() / 3, Qt::SolidLine, Qt::FlatCap));
+        p->drawPath(path());
+    }
+    if (isSelected()) {
+        QPen sel(QColor(255, 255, 255, 200), 0, Qt::DashLine);
+        p->setPen(sel);
+        p->setBrush(Qt::NoBrush);
+        p->drawRect(boundingRect());
+    }
+}
+
 void StrokeItem::addPoint(QPointF p) {
     if (pts.isEmpty()) { setPoints({p}); return; }
     pts << p;
